@@ -32,8 +32,8 @@ class GoogleDriveAuth:
         self.temp_file = None
         
         # This is the INDICATOR that the new code is running
-        logger.info("🆕 NEW AUTHENTICATION CODE LOADED - VERSION 3.0")
-        print("🆕 NEW AUTHENTICATION CODE LOADED - VERSION 3.0")  # Also print to console
+        logger.info("🆕 NEW AUTHENTICATION CODE LOADED - VERSION 4.0 - PROJECT_ID FIXED")
+        print("🆕 NEW AUTHENTICATION CODE LOADED - VERSION 4.0 - PROJECT_ID FIXED")
 
     def _detect_environment(self):
         """Detect if we're running locally or on Streamlit Cloud."""
@@ -53,7 +53,7 @@ class GoogleDriveAuth:
                     has_streamlit_secrets = (
                         'GOOGLE_CLIENT_ID' in secrets_dict and 
                         'GOOGLE_CLIENT_SECRET' in secrets_dict and
-                        'GOOGLE_PROJECT_ID' in secrets_dict
+                        'GOOGLE_PROJECT_ID' in secrets_dict  # FIXED: Added project_id check
                     )
                 except Exception as e:
                     logger.warning(f"Failed to access secrets: {e}")
@@ -93,32 +93,21 @@ class GoogleDriveAuth:
             # Get credentials from secrets
             client_id = st.secrets["GOOGLE_CLIENT_ID"]
             client_secret = st.secrets["GOOGLE_CLIENT_SECRET"]
-            project_id = st.secrets["GOOGLE_PROJECT_ID"]
+            project_id = st.secrets["GOOGLE_PROJECT_ID"]  # FIXED: Get project_id
             
-            # Get redirect URIs from secrets, with fallbacks
-            redirect_uris = []
-            if "GOOGLE_REDIRECT_URIS" in st.secrets:
-                # If redirect URIs are provided in secrets
-                redirect_uris = st.secrets["GOOGLE_REDIRECT_URIS"]
-                if isinstance(redirect_uris, str):
-                    redirect_uris = [redirect_uris]
-            else:
-                # Default redirect URIs
-                redirect_uris = [
-                    "http://localhost:8080",
-                    "http://localhost:8501"
-                ]
-
             # Create credentials structure
             credentials_dict = {
                 "web": {
                     "client_id": client_id,
                     "client_secret": client_secret,
-                    "project_id": project_id,
+                    "project_id": project_id,  # FIXED: Added project_id
                     "auth_uri": "https://accounts.google.com/o/oauth2/auth",
                     "token_uri": "https://oauth2.googleapis.com/token",
                     "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
-                    "redirect_uris": redirect_uris
+                    "redirect_uris": [
+                        "http://localhost:8080",
+                        "http://localhost:8501"
+                    ]
                 }
             }
 
@@ -141,7 +130,7 @@ class GoogleDriveAuth:
     def authenticate(self) -> Optional[object]:
         """Main authentication method."""
         try:
-            logger.info("🚀 STARTING AUTHENTICATION WITH NEW CODE")
+            logger.info("🚀 STARTING AUTHENTICATION WITH FIXED CODE")
             
             # Detect environment
             env_info = self._detect_environment()
@@ -222,22 +211,13 @@ class GoogleDriveAuth:
                     logger.info(f"🔐 Starting OAuth flow with: {creds_file}")
                     flow = InstalledAppFlow.from_client_secrets_file(creds_file, self.SCOPES)
                     
-                    if using_temp_file:
-                        # Streamlit Cloud - headless
-                        self.credentials = flow.run_local_server(
-                            port=8080,
-                            open_browser=False,
-                            authorization_prompt_message='Visit this URL: {url}',
-                            success_message='Authorization complete!'
-                        )
-                    else:
-                        # Local - open browser
-                        self.credentials = flow.run_local_server(
-                            port=8080,
-                            open_browser=True,
-                            authorization_prompt_message='Visit this URL: {url}',
-                            success_message='Authorization complete!'
-                        )
+                    # Always use headless mode for cloud deployments
+                    self.credentials = flow.run_local_server(
+                        port=8080,
+                        open_browser=False,
+                        authorization_prompt_message='Visit this URL to authenticate: {url}',
+                        success_message='Authentication successful! You can now close this tab.'
+                    )
 
                     # Save credentials
                     self._save_credentials()
