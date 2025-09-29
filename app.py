@@ -3,7 +3,7 @@ import os
 from dotenv import load_dotenv
 import logging
 
-# Load environment variables
+# Load environment variables (for local development)
 load_dotenv()
 
 # Configure logging
@@ -16,6 +16,15 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
+
+def get_api_key():
+    """Get OpenRouter API key from environment or Streamlit secrets."""
+    # Try Streamlit secrets first (for production)
+    if hasattr(st, 'secrets') and 'OPENROUTER_API_KEY' in st.secrets:
+        return st.secrets["OPENROUTER_API_KEY"]
+    
+    # Fall back to environment variable (for local development)
+    return os.getenv("OPENROUTER_API_KEY")
 
 def init_session_state():
     """Initialize session state variables"""
@@ -37,6 +46,7 @@ def display_chat_history():
     for message in st.session_state.messages:
         with st.chat_message(message["role"], avatar="🤖" if message["role"] == "assistant" else "👤"):
             st.write(message["content"])
+            
             # Show context sources if available
             if message.get("sources"):
                 with st.expander("📁 Sources Used"):
@@ -48,20 +58,29 @@ def main():
     init_session_state()
     
     # Header
-    st.markdown("<h1 style='text-align: center; color: #1f77b4;'>🤖 Intelligent AI Agent</h1>", unsafe_allow_html=True)
-    st.markdown("<p style='text-align: center;'>ChatGPT-3.5 Turbo with Google Drive Context Integration</p>", unsafe_allow_html=True)
+    st.markdown("""
+    # 🤖 **Intelligent AI Agent**
+    ### ChatGPT-3.5 Turbo with Google Drive Context Integration
+    """, unsafe_allow_html=True)
     
     # Sidebar for configuration
     with st.sidebar:
         st.markdown("## ⚙️ Configuration")
         
-        # API Key Status
-        openrouter_key = os.getenv("OPENROUTER_API_KEY")
+        # API Key Status - Updated to check Streamlit secrets
+        openrouter_key = get_api_key()
         if openrouter_key:
             st.success("✅ OpenRouter API Key Found")
+            if hasattr(st, 'secrets') and 'OPENROUTER_API_KEY' in st.secrets:
+                st.info("🔧 Using key from Streamlit secrets")
+            else:
+                st.info("🔧 Using key from environment variable")
         else:
             st.error("❌ OpenRouter API Key Missing")
-            st.info("Please set OPENROUTER_API_KEY in your .env file")
+            if hasattr(st, 'secrets'):
+                st.error("Please set OPENROUTER_API_KEY in Streamlit secrets")
+            else:
+                st.error("Please set OPENROUTER_API_KEY in your .env file")
             return
         
         # Google Drive Authentication
@@ -72,6 +91,7 @@ def main():
                 try:
                     with st.spinner("Authenticating with Google Drive..."):
                         from utils.auth import GoogleDriveAuth
+                        
                         drive_auth = GoogleDriveAuth()
                         service = drive_auth.authenticate()
                         
@@ -89,6 +109,7 @@ def main():
                             st.rerun()
                         else:
                             st.error("❌ Authentication failed")
+                            
                 except Exception as e:
                     st.error(f"❌ Authentication error: {str(e)}")
                     logger.error(f"Authentication error: {e}")
@@ -114,7 +135,7 @@ def main():
         if st.button("🗑️ Clear Chat History", type="secondary"):
             st.session_state.messages = []
             st.rerun()
-
+    
     # Initialize orchestrator (FIXED: Always check for Drive service)
     if st.session_state.orchestrator is None and openrouter_key:
         try:
@@ -164,7 +185,7 @@ def main():
             with st.spinner("Thinking and searching your Drive..."):
                 try:
                     response_data = st.session_state.orchestrator.process_query(
-                        user_input, 
+                        user_input,
                         search_limit=search_limit
                     )
                     
@@ -173,7 +194,7 @@ def main():
                     
                     # Add to chat history
                     st.session_state.messages.append({
-                        "role": "assistant", 
+                        "role": "assistant",
                         "content": response_data["response"],
                         "sources": response_data.get("sources", [])
                     })
@@ -185,7 +206,7 @@ def main():
                         st.info("💭 No relevant files found - answered using general knowledge")
                     else:
                         st.warning("📁 Google Drive not connected - answered using general knowledge only")
-                    
+                        
                 except Exception as e:
                     error_msg = f"Sorry, I encountered an error: {str(e)}"
                     st.error(error_msg)

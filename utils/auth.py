@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 class GoogleDriveAuth:
     """
-    Google Drive authentication that works with Streamlit Secrets.
+    Google Drive authentication that works with both local credentials and Streamlit secrets.
     """
     
     SCOPES = [
@@ -32,43 +32,41 @@ class GoogleDriveAuth:
         self.service = None
         self.temp_file = None
         
-        logger.info("GoogleDriveAuth initialized")
+        logger.info("GoogleDriveAuth initialized for Streamlit Cloud")
     
-    def _check_streamlit_secrets(self):
-        """Check if Streamlit secrets are available"""
+    def _has_streamlit_secrets(self) -> bool:
+        """Check if running on Streamlit Cloud with secrets configured."""
         try:
-            # Debug: Log what's available
-            if hasattr(st, 'secrets'):
-                logger.info("✅ st.secrets is available")
-                if 'GOOGLE_CLIENT_ID' in st.secrets:
-                    logger.info("✅ GOOGLE_CLIENT_ID found in secrets")
-                else:
-                    logger.error("❌ GOOGLE_CLIENT_ID not found in secrets")
-                    return False
-                    
-                if 'GOOGLE_CLIENT_SECRET' in st.secrets:
-                    logger.info("✅ GOOGLE_CLIENT_SECRET found in secrets")
-                else:
-                    logger.error("❌ GOOGLE_CLIENT_SECRET not found in secrets")
-                    return False
-                    
-                return True
-            else:
-                logger.error("❌ st.secrets not available")
+            # Check if we're in Streamlit environment
+            if not hasattr(st, 'secrets'):
+                logger.info("❌ Not running in Streamlit environment")
                 return False
-                
+            
+            # Check for required secrets
+            required_secrets = ['GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET']
+            for secret in required_secrets:
+                if secret not in st.secrets:
+                    logger.error(f"❌ {secret} not found in Streamlit secrets")
+                    return False
+                else:
+                    logger.info(f"✅ {secret} found in Streamlit secrets")
+            
+            logger.info("✅ All Streamlit secrets are configured correctly")
+            return True
+            
         except Exception as e:
-            logger.error(f"Error checking secrets: {e}")
+            logger.error(f"❌ Error checking Streamlit secrets: {e}")
             return False
     
-    def _create_credentials_from_secrets(self):
-        """Create temp credentials file from Streamlit secrets"""
+    def _create_credentials_from_secrets(self) -> Optional[str]:
+        """Create temporary credentials file from Streamlit secrets."""
         try:
-            if not self._check_streamlit_secrets():
+            if not self._has_streamlit_secrets():
                 return None
             
-            logger.info("Creating credentials from Streamlit secrets...")
+            logger.info("🔧 Creating credentials from Streamlit secrets...")
             
+            # Create the correct credentials structure
             credentials_dict = {
                 "web": {
                     "client_id": st.secrets["GOOGLE_CLIENT_ID"],
@@ -83,153 +81,217 @@ class GoogleDriveAuth:
                 }
             }
             
-            # Create temp file
-            self.temp_file = tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False)
+            # Create temporary file
+            self.temp_file = tempfile.NamedTemporaryFile(
+                mode='w', 
+                suffix='.json', 
+                delete=False,
+                prefix='streamlit_creds_'
+            )
+            
             json.dump(credentials_dict, self.temp_file, indent=2)
             self.temp_file.flush()
             self.temp_file.close()
             
-            logger.info(f"✅ Temp credentials created: {self.temp_file.name}")
+            logger.info(f"✅ Temporary credentials file created: {self.temp_file.name}")
             return self.temp_file.name
             
         except Exception as e:
-            logger.error(f"❌ Failed to create credentials from secrets: {e}")
+            logger.error(f"❌ Failed to create credentials from Streamlit secrets: {e}")
             return None
+    
+    def _cleanup_temp_file(self):
+        """Clean up temporary credentials file."""
+        if self.temp_file and os.path.exists(self.temp_file.name):
+            try:
+                os.unlink(self.temp_file.name)
+                logger.info("🧹 Temporary credentials file cleaned up")
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to clean up temp file: {e}")
     
     def authenticate(self) -> Optional[object]:
         """
-        Authenticate with Google Drive
+        Authenticate with Google Drive using local file or Streamlit secrets.
         """
         try:
             logger.info("🔍 Starting Google Drive authentication")
             
-            # Load existing token
+            # Try to load existing token
             if os.path.exists(self.token_file):
                 logger.info("📁 Loading existing token")
-                self.credentials = Credentials.from_authorized_user_file(self.token_file, self.SCOPES)
+                try:
+                    self.credentials = Credentials.from_authorized_user_file(self.token_file, self.SCOPES)
+                    logger.info("✅ Token loaded successfully")
+                except Exception as e:
+                    logger.warning(f"⚠️ Failed to load existing token: {e}")
+                    self.credentials = None
             
-            # Check if credentials need refresh
+            # Check if credentials need refresh or are invalid
             if not self.credentials or not self.credentials.valid:
+                # Try to refresh expired credentials
                 if self.credentials and self.credentials.expired and self.credentials.refresh_token:
+                    logger.info("🔄 Attempting to refresh expired credentials")
                     try:
-                        logger.info("🔄 Refreshing expired credentials")
                         self.credentials.refresh(Request())
                         logger.info("✅ Credentials refreshed successfully")
-                    except Exception as e:
-                        logger.warning(f"❌ Failed to refresh: {e}")
+                    except Exception as refresh_error:
+                        logger.warning(f"❌ Failed to refresh credentials: {refresh_error}")
                         self.credentials = None
                 
-                # Need new credentials
+                # Need new credentials - determine source
                 if not self.credentials or not self.credentials.valid:
-                    logger.info("🆕 Getting new credentials")
+                    logger.info("🆕 Need new credentials - determining source")
                     
-                    # Try local file first
-                    creds_file = None
-                    temp_created = False
+                    creds_file_path = None
+                    using_temp_file = False
                     
+                    # Check for local credentials file (for development)
                     if os.path.exists(self.credentials_file):
-                        creds_file = self.credentials_file
-                        logger.info(f"📄 Using local file: {self.credentials_file}")
-                    else:
-                        # Try Streamlit secrets
-                        logger.info("☁️ No local file, trying Streamlit secrets")
-                        creds_file = self._create_credentials_from_secrets()
-                        if creds_file:
-                            temp_created = True
-                            logger.info("✅ Using Streamlit secrets")
+                        creds_file_path = self.credentials_file
+                        logger.info(f"📄 Using local credentials file: {self.credentials_file}")
+                    
+                    # Try Streamlit secrets (for production)
+                    elif self._has_streamlit_secrets():
+                        creds_file_path = self._create_credentials_from_secrets()
+                        if creds_file_path:
+                            using_temp_file = True
+                            logger.info("☁️ Using credentials from Streamlit secrets")
                         else:
-                            # Show detailed error for debugging
-                            error_msg = "❌ No credentials available!\n\n"
-                            error_msg += "Current status:\n"
-                            error_msg += f"• Local credentials.json exists: {os.path.exists(self.credentials_file)}\n"
-                            error_msg += f"• Streamlit secrets available: {hasattr(st, 'secrets')}\n"
-                            
-                            if hasattr(st, 'secrets'):
-                                error_msg += f"• GOOGLE_CLIENT_ID in secrets: {'GOOGLE_CLIENT_ID' in st.secrets}\n"
-                                error_msg += f"• GOOGLE_CLIENT_SECRET in secrets: {'GOOGLE_CLIENT_SECRET' in st.secrets}\n"
-                            
-                            logger.error(error_msg)
-                            raise FileNotFoundError("Credentials file 'credentials.json' not found. Please download it from Google Cloud Console.")
+                            logger.error("❌ Failed to create credentials from Streamlit secrets")
+                    
+                    # No credentials source available
+                    if not creds_file_path:
+                        error_details = (
+                            "❌ No Google credentials found!\n\n"
+                            "Current environment:\n"
+                            f"• Local credentials.json exists: {os.path.exists(self.credentials_file)}\n"
+                            f"• Running in Streamlit: {hasattr(st, 'secrets')}\n"
+                        )
+                        
+                        if hasattr(st, 'secrets'):
+                            error_details += f"• GOOGLE_CLIENT_ID in secrets: {'GOOGLE_CLIENT_ID' in st.secrets}\n"
+                            error_details += f"• GOOGLE_CLIENT_SECRET in secrets: {'GOOGLE_CLIENT_SECRET' in st.secrets}\n"
+                        
+                        logger.error(error_details)
+                        raise Exception(
+                            "No Google credentials available. Please ensure:\n"
+                            "1. For local development: credentials.json file exists\n"
+                            "2. For Streamlit Cloud: GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET are set in secrets"
+                        )
                     
                     # Run OAuth flow
                     try:
-                        logger.info(f"🔐 Starting OAuth with: {creds_file}")
-                        flow = InstalledAppFlow.from_client_secrets_file(creds_file, self.SCOPES)
+                        logger.info(f"🔐 Starting OAuth flow with credentials: {creds_file_path}")
                         
-                        self.credentials = flow.run_local_server(
-                            port=8080,
-                            open_browser=False,
-                            authorization_prompt_message='Visit this URL to authorize: {url}'
-                        )
+                        flow = InstalledAppFlow.from_client_secrets_file(creds_file_path, self.SCOPES)
                         
+                        # Run OAuth flow (different approach for Streamlit Cloud)
+                        if using_temp_file:
+                            # Streamlit Cloud - use headless flow
+                            logger.info("☁️ Running OAuth flow for Streamlit Cloud")
+                            self.credentials = flow.run_local_server(
+                                port=8080,
+                                authorization_prompt_message=(
+                                    'Please visit this URL to authorize the application: {url}\n'
+                                    'After authorization, return to the app.'
+                                ),
+                                success_message='Authorization complete! You can close this browser window.',
+                                open_browser=False
+                            )
+                        else:
+                            # Local development
+                            logger.info("💻 Running OAuth flow for local development")
+                            self.credentials = flow.run_local_server(
+                                port=8080,
+                                authorization_prompt_message='Please visit this URL to authorize: {url}',
+                                success_message='Authorization complete! You can close this window.',
+                                open_browser=True
+                            )
+                        
+                        # Save credentials for next time
                         self._save_credentials()
-                        logger.info("✅ New credentials saved")
+                        logger.info("✅ New credentials obtained and saved")
                         
+                    except Exception as oauth_error:
+                        logger.error(f"❌ OAuth flow failed: {oauth_error}")
+                        raise Exception(f"OAuth authentication failed: {str(oauth_error)}")
+                    
                     finally:
-                        # Clean up temp file
-                        if temp_created and self.temp_file and os.path.exists(self.temp_file.name):
-                            try:
-                                os.unlink(self.temp_file.name)
-                                logger.info("🧹 Temp file cleaned up")
-                            except:
-                                pass
+                        # Clean up temporary file
+                        if using_temp_file:
+                            self._cleanup_temp_file()
             
-            # Build service
-            logger.info("🔨 Building Google Drive service")
+            # Build Google Drive service
+            logger.info("🔨 Building Google Drive API service")
             self.service = build('drive', 'v3', credentials=self.credentials)
             
-            # Test service
+            # Test the service
             if self._test_service():
-                logger.info("✅ Google Drive authenticated successfully!")
+                logger.info("✅ Google Drive service authenticated and tested successfully!")
                 return self.service
             else:
-                logger.error("❌ Service test failed")
+                logger.error("❌ Service authentication test failed")
                 return None
                 
         except Exception as e:
-            logger.error(f"💥 Authentication error: {str(e)}")
-            raise Exception(f"Google Drive authentication failed: {str(e)}")
+            logger.error(f"💥 Critical authentication error: {str(e)}")
+            # Clean up on error
+            self._cleanup_temp_file()
+            # Re-raise with a user-friendly message
+            if "No Google credentials" in str(e):
+                raise e  # Pass through our detailed message
+            else:
+                raise Exception(f"Google Drive authentication failed: {str(e)}")
     
-    def _save_credentials(self):
-        """Save credentials to file"""
+    def _save_credentials(self) -> None:
+        """Save credentials to token file."""
         try:
-            with open(self.token_file, 'w') as token:
-                token.write(self.credentials.to_json())
-            logger.info("💾 Credentials saved")
+            with open(self.token_file, 'w') as token_file:
+                token_file.write(self.credentials.to_json())
+            logger.info(f"💾 Credentials saved to {self.token_file}")
         except Exception as e:
             logger.error(f"❌ Failed to save credentials: {e}")
     
-    def _test_service(self):
-        """Test Google Drive service"""
+    def _test_service(self) -> bool:
+        """Test the Google Drive service."""
         try:
+            logger.info("🧪 Testing Google Drive service connection...")
             results = self.service.files().list(pageSize=1, fields="files(id, name)").execute()
-            logger.info("🧪 Service test passed")
+            files = results.get('files', [])
+            logger.info(f"✅ Service test passed - accessible files found: {len(files)}")
             return True
+        except HttpError as e:
+            logger.error(f"❌ HTTP error during service test: {e}")
+            return False
         except Exception as e:
             logger.error(f"❌ Service test failed: {e}")
             return False
     
-    def get_service(self):
+    def get_service(self) -> Optional[object]:
         return self.service
     
-    def is_authenticated(self):
-        return (self.credentials is not None and 
-                self.credentials.valid and 
-                self.service is not None)
+    def is_authenticated(self) -> bool:
+        return (
+            self.credentials is not None and 
+            self.credentials.valid and 
+            self.service is not None
+        )
     
-    def logout(self):
+    def logout(self) -> None:
+        """Log out and clean up all authentication data."""
         try:
+            # Remove token file
             if os.path.exists(self.token_file):
                 os.remove(self.token_file)
-        except:
-            pass
+                logger.info(f"🗑️ Removed token file: {self.token_file}")
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to remove token file: {e}")
         
-        if self.temp_file and os.path.exists(self.temp_file.name):
-            try:
-                os.unlink(self.temp_file.name)
-            except:
-                pass
+        # Clean up temporary files
+        self._cleanup_temp_file()
         
+        # Clear in-memory objects
         self.credentials = None
         self.service = None
-        logger.info("👋 Logged out")
+        
+        logger.info("👋 Logged out successfully")
