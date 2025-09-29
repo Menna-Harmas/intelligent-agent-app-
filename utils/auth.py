@@ -1,7 +1,4 @@
-import streamlit as st
 import os
-import json
-import tempfile
 from typing import Optional
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
@@ -16,8 +13,8 @@ logger = logging.getLogger(__name__)
 
 class GoogleDriveAuth:
     """
-    Google Drive authentication handler that works both locally and on Streamlit Cloud.
-    Uses local credentials.json for development and Streamlit secrets for deployment.
+    Google Drive authentication handler.
+    FIXED: Better service creation and validation.
     """
     
     SCOPES = [
@@ -31,93 +28,28 @@ class GoogleDriveAuth:
         Initialize the Google Drive authentication handler.
         
         Args:
-            credentials_file: Path to the OAuth2 credentials file (for local development)
+            credentials_file: Path to the OAuth2 credentials file
             token_file: Path to store/load the access token
         """
         self.credentials_file = credentials_file
         self.token_file = token_file
         self.credentials = None
         self.service = None
-        self.temp_credentials_file = None
         
-        logger.info(f"GoogleDriveAuth initialized")
-    
-    def _get_credentials_file(self) -> str:
-        """
-        Get credentials from local file or create from Streamlit secrets.
-        
-        Returns:
-            Path to credentials file
-            
-        Raises:
-            FileNotFoundError: If no credentials are available
-        """
-        
-        # Try local file first (for development)
-        if os.path.exists(self.credentials_file):
-            logger.info(f"Using local credentials file: {self.credentials_file}")
-            return self.credentials_file
-        
-        # Try Streamlit secrets (for deployment)
-        try:
-            if hasattr(st, 'secrets') and 'GOOGLE_CLIENT_ID' in st.secrets:
-                logger.info("Creating credentials from Streamlit secrets")
-                
-                credentials_dict = {
-                    "web": {
-                        "client_id": st.secrets["GOOGLE_CLIENT_ID"],
-                        "client_secret": st.secrets["GOOGLE_CLIENT_SECRET"],
-                        "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-                        "token_uri": "https://oauth2.googleapis.com/token",
-                        "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
-                        "redirect_uris": ["http://localhost:8080/"]
-                    }
-                }
-                
-                # Create temporary credentials file
-                self.temp_credentials_file = tempfile.NamedTemporaryFile(
-                    mode='w', 
-                    suffix='.json', 
-                    delete=False,
-                    prefix='temp_credentials_'
-                )
-                
-                json.dump(credentials_dict, self.temp_credentials_file)
-                self.temp_credentials_file.flush()
-                self.temp_credentials_file.close()
-                
-                logger.info(f"Temporary credentials file created: {self.temp_credentials_file.name}")
-                return self.temp_credentials_file.name
-        
-        except Exception as e:
-            logger.error(f"Failed to create credentials from Streamlit secrets: {e}")
-        
-        # No credentials available
-        raise FileNotFoundError(
-            "No Google credentials found. Please ensure you have either:\n"
-            "1. A credentials.json file (for local development), or\n"
-            "2. GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET in Streamlit secrets (for deployment)"
-        )
+        logger.info(f"GoogleDriveAuth initialized with credentials file: {credentials_file}")
     
     def authenticate(self) -> Optional[object]:
         """
         Authenticate with Google Drive and return the service object.
+        FIXED: Better error handling and service validation.
         
         Returns:
             Google Drive API service object or None if authentication fails
-            
-        Raises:
-            Exception: If authentication fails
         """
         try:
-            logger.info("Starting Google Drive authentication")
-            
-            # Get credentials file
-            creds_file = self._get_credentials_file()
-            
-            # Load existing token if available
+            # Load existing credentials if they exist
             if os.path.exists(self.token_file):
-                logger.info(f"Loading existing token from {self.token_file}")
+                logger.info(f"Loading existing credentials from {self.token_file}")
                 self.credentials = Credentials.from_authorized_user_file(self.token_file, self.SCOPES)
             
             # Check if credentials are valid or need refresh
@@ -131,49 +63,37 @@ class GoogleDriveAuth:
                         logger.warning(f"Failed to refresh credentials: {refresh_error}")
                         self.credentials = None
                 
-                # Get new credentials if needed
+                # If credentials are still invalid, start OAuth flow
                 if not self.credentials or not self.credentials.valid:
-                    logger.info("Starting OAuth2 flow for new credentials")
+                    logger.info("Starting OAuth2 flow")
                     
-                    flow = InstalledAppFlow.from_client_secrets_file(creds_file, self.SCOPES)
+                    if not os.path.exists(self.credentials_file):
+                        raise FileNotFoundError(f"Credentials file '{self.credentials_file}' not found. "
+                                              f"Please download it from Google Cloud Console.")
                     
-                    # Different auth approaches based on environment
-                    try:
-                        if self._is_streamlit_cloud():
-                            logger.info("Running in Streamlit Cloud - using headless auth")
-                            # For Streamlit Cloud deployment
-                            self.credentials = flow.run_local_server(
-                                port=8080,
-                                open_browser=False,
-                                authorization_prompt_message=(
-                                    'Please visit this URL to authorize the application: {url}\n'
-                                    'After authorization, return to the app.'
-                                ),
-                                success_message='Authorization complete! You may close this window and return to the app.'
-                            )
-                        else:
-                            logger.info("Running locally - using standard auth")
-                            # For local development
-                            self.credentials = flow.run_local_server(
-                                port=8080,
-                                open_browser=True
-                            )
-                        
-                        # Save the credentials for future use
-                        self._save_credentials()
-                        logger.info("New credentials obtained and saved")
-                        
-                    except Exception as oauth_error:
-                        logger.error(f"OAuth flow failed: {oauth_error}")
-                        raise Exception(f"OAuth authentication failed: {str(oauth_error)}")
+                    flow = InstalledAppFlow.from_client_secrets_file(
+                        self.credentials_file, 
+                        self.SCOPES
+                    )
+                    
+                    self.credentials = flow.run_local_server(
+                        port=8080,
+                        authorization_prompt_message='Please visit this URL to authorize the application: {url}',
+                        success_message='Authorization complete! You may close this window.',
+                        open_browser=True
+                    )
+                    
+                    # Save the credentials for next time
+                    self._save_credentials()
+                    logger.info("New credentials obtained and saved")
             
             # Build the service
             logger.info("Building Google Drive API service")
             self.service = build('drive', 'v3', credentials=self.credentials)
             
-            # Test the service
+            # Test the service to make sure it works
             if self._test_service():
-                logger.info("Google Drive service authenticated and tested successfully")
+                logger.info("Google Drive service created and tested successfully")
                 return self.service
             else:
                 logger.error("Service test failed")
@@ -182,31 +102,9 @@ class GoogleDriveAuth:
         except Exception as e:
             logger.error(f"Authentication failed: {str(e)}")
             raise Exception(f"Google Drive authentication failed: {str(e)}")
-        
-        finally:
-            # Clean up temporary credentials file
-            if self.temp_credentials_file and os.path.exists(self.temp_credentials_file.name):
-                try:
-                    os.unlink(self.temp_credentials_file.name)
-                    logger.info("Temporary credentials file cleaned up")
-                except Exception as cleanup_error:
-                    logger.warning(f"Failed to clean up temporary file: {cleanup_error}")
-    
-    def _is_streamlit_cloud(self) -> bool:
-        """
-        Check if running on Streamlit Cloud.
-        
-        Returns:
-            True if running on Streamlit Cloud, False otherwise
-        """
-        return (
-            hasattr(st, 'secrets') or 
-            os.getenv('STREAMLIT_SHARING_MODE') is not None or
-            'streamlit' in os.getenv('HOME', '').lower()
-        )
     
     def _save_credentials(self) -> None:
-        """Save credentials to token file."""
+        """Save credentials to file."""
         try:
             with open(self.token_file, 'w') as token_file:
                 token_file.write(self.credentials.to_json())
@@ -223,18 +121,9 @@ class GoogleDriveAuth:
         """
         try:
             # Try to list files (with a small limit)
-            results = self.service.files().list(
-                pageSize=1, 
-                fields="files(id, name)"
-            ).execute()
-            
-            files = results.get('files', [])
-            logger.info(f"Service test passed - able to access Drive (found {len(files)} files in test)")
+            results = self.service.files().list(pageSize=1, fields="files(id, name)").execute()
+            logger.info("Service test passed - able to list files")
             return True
-            
-        except HttpError as e:
-            logger.error(f"HTTP error during service test: {e}")
-            return False
         except Exception as e:
             logger.error(f"Service test failed: {e}")
             return False
@@ -250,80 +139,26 @@ class GoogleDriveAuth:
     
     def is_authenticated(self) -> bool:
         """
-        Check if the user is authenticated and service is ready.
+        Check if the user is authenticated.
         
         Returns:
-            True if authenticated and service is available, False otherwise
+            True if authenticated, False otherwise
         """
-        return (
-            self.credentials is not None and 
-            self.credentials.valid and 
-            self.service is not None
-        )
+        return (self.credentials is not None and 
+                self.credentials.valid and 
+                self.service is not None)
     
     def logout(self) -> None:
         """
-        Log out by removing stored credentials and clearing service.
+        Log out by removing stored credentials.
         """
         try:
-            # Remove token file
             if os.path.exists(self.token_file):
                 os.remove(self.token_file)
                 logger.info(f"Removed token file: {self.token_file}")
         except Exception as e:
             logger.warning(f"Failed to remove token file: {e}")
         
-        # Clear in-memory objects
         self.credentials = None
         self.service = None
-        
         logger.info("Logged out successfully")
-    
-    def get_user_info(self) -> Optional[dict]:
-        """
-        Get basic user information if available.
-        
-        Returns:
-            Dictionary with user info or None
-        """
-        try:
-            if self.service:
-                # Try to get user info from Drive API
-                about = self.service.about().get(fields="user").execute()
-                user = about.get('user', {})
-                
-                return {
-                    'email': user.get('emailAddress'),
-                    'name': user.get('displayName'),
-                    'photo': user.get('photoLink')
-                }
-        except Exception as e:
-            logger.warning(f"Could not get user info: {e}")
-        
-        return None
-    
-    def list_recent_files(self, max_files: int = 10) -> list:
-        """
-        List recent files for testing/debugging purposes.
-        
-        Args:
-            max_files: Maximum number of files to return
-            
-        Returns:
-            List of file dictionaries
-        """
-        try:
-            if not self.service:
-                return []
-            
-            results = self.service.files().list(
-                pageSize=max_files,
-                fields="files(id, name, mimeType, modifiedTime)",
-                orderBy="modifiedTime desc"
-            ).execute()
-            
-            return results.get('files', [])
-            
-        except Exception as e:
-            logger.error(f"Error listing files: {e}")
-            return []
