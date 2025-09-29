@@ -1,81 +1,144 @@
+import streamlit as st
 import os
-from typing import Optional
+import json
+import tempfile
+from typing import Optional, Dict
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
 import logging
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 class GoogleDriveAuth:
+    """
+    Google Drive authentication that works locally and on Streamlit Cloud.
+    Uses run_local_server instead of run_console.
+    """
     SCOPES = [
         'https://www.googleapis.com/auth/drive.readonly',
         'https://www.googleapis.com/auth/drive.file',
         'https://www.googleapis.com/auth/drive.metadata.readonly'
     ]
 
-    def __init__(self, token_file: str = "token.json"):
+    def __init__(self,
+                 credentials_file: str = "credentials.json",
+                 token_file: str = "token.json"):
+        self.credentials_file = credentials_file
         self.token_file = token_file
-        self.credentials = None
+        self.credentials: Optional[Credentials] = None
         self.service = None
-        logger.info("GoogleDriveAuth initialized")
+        self._temp_creds_path: Optional[str] = None
+
+        logger.info("🆕 AUTH CODE LOADED (no run_console)")
+
+    def _env_info(self) -> Dict[str, bool]:
+        has_local = os.path.exists(self.credentials_file)
+        has_secrets = False
+        can_access = False
+        if hasattr(st, "secrets"):
+            try:
+                _ = dict(st.secrets)
+                can_access = True
+                has_secrets = ("GOOGLE_CLIENT_ID" in st.secrets and
+                               "GOOGLE_CLIENT_SECRET" in st.secrets)
+            except:
+                pass
+        return {
+            "local": has_local,
+            "secrets": has_secrets,
+            "can_access": can_access
+        }
+
+    def _create_temp_credentials(self) -> Optional[str]:
+        info = self._env_info()
+        if not info["secrets"]:
+            return None
+        creds = {
+            "web": {
+                "client_id": st.secrets["GOOGLE_CLIENT_ID"],
+                "client_secret": st.secrets["GOOGLE_CLIENT_SECRET"],
+                "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                "token_uri": "https://oauth2.googleapis.com/token",
+                "auth_provider_x509_cert_url": 
+                    "https://www.googleapis.com/oauth2/v1/certs",
+                "redirect_uris": [
+                    "https://intelligent-agent-menna.streamlit.app/",
+                    "https://intelligent-agent-menna.streamlit.app/_oauth2callback"
+                ]
+            }
+        }
+        tf = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False, prefix="tmp_creds_"
+        )
+        json.dump(creds, tf, indent=2)
+        tf.flush(); tf.close()
+        self._temp_creds_path = tf.name
+        return tf.name
 
     def authenticate(self) -> Optional[object]:
+        info = self._env_info()
+        logger.info(f"ENV INFO: {info}")
+        # Load existing token
+        if os.path.exists(self.token_file):
+            try:
+                self.credentials = Credentials.from_authorized_user_file(
+                    self.token_file, self.SCOPES
+                )
+            except Exception:
+                self.credentials = None
+        # Refresh if expired
+        if (self.credentials and self.credentials.expired 
+                and self.credentials.refresh_token):
+            try:
+                self.credentials.refresh(Request())
+            except Exception:
+                self.credentials = None
+        # Acquire new credentials
+        if not self.credentials or not self.credentials.valid:
+            # Determine client secrets source
+            if info["local"]:
+                secret_path = self.credentials_file
+            elif info["secrets"]:
+                secret_path = self._create_temp_credentials()
+            else:
+                raise Exception(
+                    "No credentials.json (local) and no Streamlit secrets.\n"
+                    "Please provide one."
+                )
+            flow = InstalledAppFlow.from_client_secrets_file(
+                secret_path, self.SCOPES
+            )
+            self.credentials = flow.run_local_server(
+                port=0,
+                open_browser=not info["secrets"],
+                authorization_prompt_message="Please visit: {url}",
+                success_message="Auth complete."
+            )
+            # Save token for next time
+            with open(self.token_file, "w") as f:
+                f.write(self.credentials.to_json())
+            # Cleanup temp file
+            if self._temp_creds_path:
+                try: os.unlink(self._temp_creds_path)
+                except: pass
+        # Build and test service
+        self.service = build('drive', 'v3', credentials=self.credentials)
         try:
-            if os.path.exists(self.token_file):
-                logger.info(f"Loading existing credentials from {self.token_file}")
-                self.credentials = Credentials.from_authorized_user_file(self.token_file, self.SCOPES)
-
-            if not self.credentials or not self.credentials.valid:
-                if self.credentials and self.credentials.expired and self.credentials.refresh_token:
-                    logger.info("Refreshing expired credentials")
-                    self.credentials.refresh(Request())
-
-                if not self.credentials or not self.credentials.valid:
-                    logger.info("Starting OAuth2 console flow")
-                    required = ['GOOGLE_CLIENT_ID','GOOGLE_CLIENT_SECRET','GOOGLE_PROJECT_ID','GOOGLE_REDIRECT_URIS']
-                    missing = [v for v in required if v not in os.environ]
-                    if missing:
-                        raise EnvironmentError(f"Missing env vars: {', '.join(missing)}")
-
-                    config={"web":{
-                        "client_id":os.environ['GOOGLE_CLIENT_ID'],
-                        "client_secret":os.environ['GOOGLE_CLIENT_SECRET'],
-                        "project_id":os.environ['GOOGLE_PROJECT_ID'],
-                        "auth_uri":"https://accounts.google.com/o/oauth2/auth",
-                        "token_uri":"https://oauth2.googleapis.com/token",
-                        "auth_provider_x509_cert_url":"https://www.googleapis.com/oauth2/v1/certs",
-                        "redirect_uris":os.environ['GOOGLE_REDIRECT_URIS'].split(',')
-                    }}
-                    flow = InstalledAppFlow.from_client_config(config, self.SCOPES)
-                    self.credentials = flow.run_console(
-                        authorization_prompt_message='Visit this URL: {url}',
-                        open_browser=False
-                    )
-                    with open(self.token_file, 'w') as f:
-                        f.write(self.credentials.to_json())
-                    logger.info(f"Token saved to {self.token_file}")
-
-            self.service = build('drive','v3',credentials=self.credentials)
             self.service.files().list(pageSize=1).execute()
-            logger.info("Google Drive service ready")
             return self.service
+        except HttpError as e:
+            raise Exception(f"Drive service test failed: {e}")
 
-        except Exception as e:
-            logger.error(f"Authentication failed: {e}")
-            raise
-
-    def get_service(self)->Optional[object]:
+    def get_service(self) -> Optional[object]:
         return self.service
 
-    def is_authenticated(self)->bool:
-        return bool(self.credentials and self.credentials.valid and self.service)
-
-    def logout(self)->None:
+    def logout(self):
         if os.path.exists(self.token_file):
-            os.remove(self.token_file)
-            logger.info(f"Removed {self.token_file}")
-        self.credentials=self.service=None
-        logger.info("Logged out")
+            try: os.remove(self.token_file)
+            except: pass
+        self.credentials = None
+        self.service = None
