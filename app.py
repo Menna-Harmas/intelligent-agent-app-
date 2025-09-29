@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 st.set_page_config(
     page_title="Intelligent AI Agent",
-    page_icon="🤖", 
+    page_icon="🤖",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -52,6 +52,53 @@ def init_session_state():
         st.session_state.drive_auth = None
     if 'drive_service' not in st.session_state:
         st.session_state.drive_service = None
+    if 'auth_error_details' not in st.session_state:
+        st.session_state.auth_error_details = None
+
+def show_auth_help():
+    """Show authentication help information."""
+    st.markdown("### 🆘 Authentication Help")
+    
+    # Check environment
+    is_cloud = False
+    try:
+        if hasattr(st, 'secrets'):
+            secrets_dict = dict(st.secrets)
+            is_cloud = len(secrets_dict) > 0 or 'STREAMLIT_SHARING' in os.environ
+    except:
+        pass
+    
+    if is_cloud:
+        st.markdown("""
+        **For Streamlit Cloud deployment:**
+        
+        1. Go to your app settings in Streamlit Cloud
+        2. Click on "Secrets" tab
+        3. Add these secrets:
+        ```
+        GOOGLE_CLIENT_ID = "your-client-id-here"
+        GOOGLE_CLIENT_SECRET = "your-client-secret-here"
+        GOOGLE_PROJECT_ID = "your-project-id-here"
+        ```
+        
+        **To get these values:**
+        1. Go to [Google Cloud Console](https://console.cloud.google.com/)
+        2. Select your project or create a new one
+        3. Go to "APIs & Services" > "Credentials"
+        4. Create OAuth 2.0 Client ID (Web application)
+        5. Add your Streamlit Cloud URL to authorized redirect URIs
+        """)
+    else:
+        st.markdown("""
+        **For local development:**
+        
+        1. Go to [Google Cloud Console](https://console.cloud.google.com/)
+        2. Create or select a project
+        3. Go to "APIs & Services" > "Credentials"
+        4. Create OAuth 2.0 Client ID
+        5. Download credentials.json file
+        6. Place it in your project root directory
+        """)
 
 def main():
     init_session_state()
@@ -72,49 +119,82 @@ def main():
             st.error("Add OPENROUTER_API_KEY to .env file or Streamlit secrets")
             return
         
-        # Google Drive Authentication 
+        # Google Drive Authentication
         st.markdown("### 🔐 Google Drive Authentication")
         
         if not st.session_state.drive_authenticated:
-            if st.button("🔗 Connect to Google Drive", type="primary"):
-                try:
-                    with st.spinner("Authenticating with Google Drive..."):
-                        # Import the NEW auth code
-                        from utils.auth import GoogleDriveAuth
-                        
-                        # Create auth instance
-                        drive_auth = GoogleDriveAuth()
-                        
-                        # Attempt authentication
-                        service = drive_auth.authenticate()
-                        
-                        if service:
-                            st.session_state.drive_authenticated = True
-                            st.session_state.drive_auth = drive_auth
-                            st.session_state.drive_service = service
-                            st.session_state.orchestrator = None  # Reset orchestrator
+            col1, col2 = st.columns([1, 1])
+            
+            with col1:
+                if st.button("🔗 Connect to Google Drive", type="primary"):
+                    try:
+                        with st.spinner("Authenticating with Google Drive..."):
+                            # Import the updated auth code
+                            from utils.auth import GoogleDriveAuth
                             
-                            st.success("✅ Successfully connected to Google Drive!")
-                            logger.info("Google Drive authentication successful")
-                            st.rerun()
-                        else:
-                            st.error("❌ Authentication failed")
+                            # Create auth instance
+                            drive_auth = GoogleDriveAuth()
                             
-                except Exception as e:
-                    st.error(f"❌ Authentication error: {str(e)}")
-                    logger.error(f"Authentication error: {e}")
+                            # Attempt authentication
+                            service = drive_auth.authenticate()
+                            
+                            if service:
+                                st.session_state.drive_authenticated = True
+                                st.session_state.drive_auth = drive_auth
+                                st.session_state.drive_service = service
+                                st.session_state.orchestrator = None  # Reset orchestrator
+                                st.session_state.auth_error_details = None
+                                st.success("✅ Successfully connected to Google Drive!")
+                                logger.info("Google Drive authentication successful")
+                                st.rerun()
+                            else:
+                                st.error("❌ Authentication failed")
+                                
+                    except Exception as e:
+                        error_msg = str(e)
+                        st.session_state.auth_error_details = error_msg
+                        st.error(f"❌ Authentication error: Google Drive authentication failed")
+                        logger.error(f"Authentication error: {e}")
+            
+            with col2:
+                if st.button("❓ Help"):
+                    show_auth_help()
+            
+            # Show detailed error in expander if there's an error
+            if st.session_state.auth_error_details:
+                with st.expander("🔍 Error Details", expanded=False):
+                    st.code(st.session_state.auth_error_details)
                     
-                    # Show detailed error in expander
-                    with st.expander("🔍 Error Details"):
-                        st.code(str(e))
+                    # Show specific help based on error
+                    if "Streamlit secrets not configured" in st.session_state.auth_error_details:
+                        st.warning("💡 You need to configure Google OAuth credentials in Streamlit secrets")
+                        show_auth_help()
+                    elif "credentials.json" in st.session_state.auth_error_details:
+                        st.warning("💡 Missing credentials.json file for local development")
+                        show_auth_help()
         else:
             st.success("✅ Google Drive Connected")
-            if st.button("🔄 Refresh Connection"):
-                st.session_state.drive_authenticated = False
-                st.session_state.drive_auth = None
-                st.session_state.drive_service = None
-                st.session_state.orchestrator = None
-                st.rerun()
+            col1, col2 = st.columns([1, 1])
+            
+            with col1:
+                if st.button("🔄 Refresh Connection"):
+                    st.session_state.drive_authenticated = False
+                    st.session_state.drive_auth = None
+                    st.session_state.drive_service = None
+                    st.session_state.orchestrator = None
+                    st.session_state.auth_error_details = None
+                    st.rerun()
+            
+            with col2:
+                if st.button("🚪 Disconnect"):
+                    if st.session_state.drive_auth:
+                        st.session_state.drive_auth.logout()
+                    st.session_state.drive_authenticated = False
+                    st.session_state.drive_auth = None
+                    st.session_state.drive_service = None
+                    st.session_state.orchestrator = None
+                    st.session_state.auth_error_details = None
+                    st.rerun()
         
         # Model Parameters
         st.markdown("### 🎛️ Model Parameters")
@@ -130,7 +210,6 @@ def main():
     if st.session_state.orchestrator is None and openrouter_key:
         try:
             from agent.orchestrator import IntelligentOrchestrator
-            
             drive_service = st.session_state.drive_service if st.session_state.drive_authenticated else None
             
             st.session_state.orchestrator = IntelligentOrchestrator(
@@ -175,17 +254,15 @@ def main():
                 try:
                     response_data = st.session_state.orchestrator.process_query(user_input)
                     st.write(response_data["response"])
-                    
                     st.session_state.messages.append({
-                        "role": "assistant",
+                        "role": "assistant", 
                         "content": response_data["response"]
                     })
-                    
                 except Exception as e:
                     error_msg = f"Error: {str(e)}"
                     st.error(error_msg)
                     st.session_state.messages.append({
-                        "role": "assistant", 
+                        "role": "assistant",
                         "content": error_msg
                     })
         
