@@ -32,45 +32,55 @@ class GoogleDriveAuth:
         self.service = None
         self.temp_file = None
         
-        logger.info("GoogleDriveAuth initialized for Streamlit Cloud")
+        logger.info("GoogleDriveAuth initialized")
     
-    def _has_streamlit_secrets(self) -> bool:
-        """Check if running on Streamlit Cloud with secrets configured."""
+    def _check_streamlit_secrets(self) -> bool:
+        """Safely check if Streamlit secrets are available and configured."""
         try:
-            # Check if we're in Streamlit environment
+            # Check if we're in Streamlit environment with secrets
             if not hasattr(st, 'secrets'):
-                logger.info("❌ Not running in Streamlit environment")
+                logger.info("Not running in Streamlit Cloud environment")
                 return False
             
-            # Check for required secrets
-            required_secrets = ['GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET']
-            for secret in required_secrets:
-                if secret not in st.secrets:
-                    logger.error(f"❌ {secret} not found in Streamlit secrets")
+            # Try to access secrets safely
+            try:
+                secrets = st.secrets
+                if 'GOOGLE_CLIENT_ID' not in secrets:
+                    logger.warning("GOOGLE_CLIENT_ID not found in Streamlit secrets")
                     return False
-                else:
-                    logger.info(f"✅ {secret} found in Streamlit secrets")
-            
-            logger.info("✅ All Streamlit secrets are configured correctly")
-            return True
-            
+                
+                if 'GOOGLE_CLIENT_SECRET' not in secrets:
+                    logger.warning("GOOGLE_CLIENT_SECRET not found in Streamlit secrets")
+                    return False
+                
+                logger.info("✅ Streamlit secrets found and configured")
+                return True
+                
+            except Exception as secrets_error:
+                logger.warning(f"Cannot access Streamlit secrets: {secrets_error}")
+                return False
+                
         except Exception as e:
-            logger.error(f"❌ Error checking Streamlit secrets: {e}")
+            logger.warning(f"Error checking for Streamlit secrets: {e}")
             return False
     
     def _create_credentials_from_secrets(self) -> Optional[str]:
         """Create temporary credentials file from Streamlit secrets."""
         try:
-            if not self._has_streamlit_secrets():
+            if not self._check_streamlit_secrets():
                 return None
             
             logger.info("🔧 Creating credentials from Streamlit secrets...")
             
-            # Create the correct credentials structure
+            # Get secrets safely
+            client_id = st.secrets["GOOGLE_CLIENT_ID"]
+            client_secret = st.secrets["GOOGLE_CLIENT_SECRET"]
+            
+            # Create the credentials structure
             credentials_dict = {
                 "web": {
-                    "client_id": st.secrets["GOOGLE_CLIENT_ID"],
-                    "client_secret": st.secrets["GOOGLE_CLIENT_SECRET"],
+                    "client_id": client_id,
+                    "client_secret": client_secret,
                     "auth_uri": "https://accounts.google.com/o/oauth2/auth",
                     "token_uri": "https://oauth2.googleapis.com/token",
                     "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
@@ -145,39 +155,38 @@ class GoogleDriveAuth:
                     creds_file_path = None
                     using_temp_file = False
                     
-                    # Check for local credentials file (for development)
+                    # Check for local credentials file first (for development)
                     if os.path.exists(self.credentials_file):
                         creds_file_path = self.credentials_file
                         logger.info(f"📄 Using local credentials file: {self.credentials_file}")
                     
-                    # Try Streamlit secrets (for production)
-                    elif self._has_streamlit_secrets():
+                    # Try Streamlit secrets if no local file (for production)
+                    else:
+                        logger.info("No local credentials.json found, checking Streamlit secrets...")
                         creds_file_path = self._create_credentials_from_secrets()
                         if creds_file_path:
                             using_temp_file = True
                             logger.info("☁️ Using credentials from Streamlit secrets")
                         else:
-                            logger.error("❌ Failed to create credentials from Streamlit secrets")
+                            logger.error("❌ No credentials source available")
                     
                     # No credentials source available
                     if not creds_file_path:
-                        error_details = (
+                        error_msg = (
                             "❌ No Google credentials found!\n\n"
-                            "Current environment:\n"
+                            "For LOCAL DEVELOPMENT:\n"
+                            f"• Please ensure credentials.json exists in: {os.path.abspath(self.credentials_file)}\n"
+                            f"• Download it from Google Cloud Console\n\n"
+                            "For STREAMLIT CLOUD:\n"
+                            "• Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET in app secrets\n\n"
+                            f"Current status:\n"
                             f"• Local credentials.json exists: {os.path.exists(self.credentials_file)}\n"
-                            f"• Running in Streamlit: {hasattr(st, 'secrets')}\n"
+                            f"• Running in Streamlit Cloud: {hasattr(st, 'secrets')}\n"
+                            f"• Streamlit secrets configured: {self._check_streamlit_secrets()}"
                         )
                         
-                        if hasattr(st, 'secrets'):
-                            error_details += f"• GOOGLE_CLIENT_ID in secrets: {'GOOGLE_CLIENT_ID' in st.secrets}\n"
-                            error_details += f"• GOOGLE_CLIENT_SECRET in secrets: {'GOOGLE_CLIENT_SECRET' in st.secrets}\n"
-                        
-                        logger.error(error_details)
-                        raise Exception(
-                            "No Google credentials available. Please ensure:\n"
-                            "1. For local development: credentials.json file exists\n"
-                            "2. For Streamlit Cloud: GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET are set in secrets"
-                        )
+                        logger.error(error_msg)
+                        raise Exception(error_msg)
                     
                     # Run OAuth flow
                     try:
@@ -185,7 +194,7 @@ class GoogleDriveAuth:
                         
                         flow = InstalledAppFlow.from_client_secrets_file(creds_file_path, self.SCOPES)
                         
-                        # Run OAuth flow (different approach for Streamlit Cloud)
+                        # Run OAuth flow (different approach for different environments)
                         if using_temp_file:
                             # Streamlit Cloud - use headless flow
                             logger.info("☁️ Running OAuth flow for Streamlit Cloud")
@@ -199,7 +208,7 @@ class GoogleDriveAuth:
                                 open_browser=False
                             )
                         else:
-                            # Local development
+                            # Local development - open browser
                             logger.info("💻 Running OAuth flow for local development")
                             self.credentials = flow.run_local_server(
                                 port=8080,
@@ -237,11 +246,8 @@ class GoogleDriveAuth:
             logger.error(f"💥 Critical authentication error: {str(e)}")
             # Clean up on error
             self._cleanup_temp_file()
-            # Re-raise with a user-friendly message
-            if "No Google credentials" in str(e):
-                raise e  # Pass through our detailed message
-            else:
-                raise Exception(f"Google Drive authentication failed: {str(e)}")
+            # Re-raise the error
+            raise e
     
     def _save_credentials(self) -> None:
         """Save credentials to token file."""

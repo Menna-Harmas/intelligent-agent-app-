@@ -19,12 +19,29 @@ st.set_page_config(
 
 def get_api_key():
     """Get OpenRouter API key from environment or Streamlit secrets."""
-    # Try Streamlit secrets first (for production)
-    if hasattr(st, 'secrets') and 'OPENROUTER_API_KEY' in st.secrets:
-        return st.secrets["OPENROUTER_API_KEY"]
-    
-    # Fall back to environment variable (for local development)
-    return os.getenv("OPENROUTER_API_KEY")
+    try:
+        # First try environment variable (for local development)
+        env_key = os.getenv("OPENROUTER_API_KEY")
+        if env_key:
+            logger.info("✅ Using OpenRouter API key from environment variable")
+            return env_key
+        
+        # Then try Streamlit secrets (for production)
+        if hasattr(st, 'secrets'):
+            try:
+                if 'OPENROUTER_API_KEY' in st.secrets:
+                    logger.info("✅ Using OpenRouter API key from Streamlit secrets")
+                    return st.secrets["OPENROUTER_API_KEY"]
+            except Exception as e:
+                logger.warning(f"Could not access Streamlit secrets: {e}")
+        
+        # No API key found
+        logger.error("❌ No OpenRouter API key found")
+        return None
+        
+    except Exception as e:
+        logger.error(f"Error getting API key: {e}")
+        return None
 
 def init_session_state():
     """Initialize session state variables"""
@@ -67,20 +84,26 @@ def main():
     with st.sidebar:
         st.markdown("## ⚙️ Configuration")
         
-        # API Key Status - Updated to check Streamlit secrets
+        # API Key Status
         openrouter_key = get_api_key()
         if openrouter_key:
             st.success("✅ OpenRouter API Key Found")
-            if hasattr(st, 'secrets') and 'OPENROUTER_API_KEY' in st.secrets:
-                st.info("🔧 Using key from Streamlit secrets")
+            # Show source of API key
+            env_key = os.getenv("OPENROUTER_API_KEY")
+            if env_key:
+                st.info("🔧 Using key from environment variable (.env file)")
             else:
-                st.info("🔧 Using key from environment variable")
+                st.info("🔧 Using key from Streamlit secrets")
         else:
             st.error("❌ OpenRouter API Key Missing")
-            if hasattr(st, 'secrets'):
-                st.error("Please set OPENROUTER_API_KEY in Streamlit secrets")
-            else:
-                st.error("Please set OPENROUTER_API_KEY in your .env file")
+            st.error("""
+            **For local development:** Create a `.env` file with:
+            ```
+            OPENROUTER_API_KEY=your-api-key-here
+            ```
+            
+            **For Streamlit Cloud:** Set OPENROUTER_API_KEY in app secrets.
+            """)
             return
         
         # Google Drive Authentication
@@ -136,7 +159,7 @@ def main():
             st.session_state.messages = []
             st.rerun()
     
-    # Initialize orchestrator (FIXED: Always check for Drive service)
+    # Initialize orchestrator
     if st.session_state.orchestrator is None and openrouter_key:
         try:
             from agent.orchestrator import IntelligentOrchestrator
