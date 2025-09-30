@@ -1,9 +1,8 @@
 import logging
 from typing import Dict, List, Optional, Any
-from .chat_agent import ChatGPTAgent
-from .drive_utils import GoogleDriveUtils
+from agent.chat_agent import ChatGPTAgent
+from utils.drive_utils import GoogleDriveUtils
 
-# Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -11,7 +10,6 @@ class IntelligentOrchestrator:
     """
     Main orchestrator that coordinates between ChatGPT agent and Google Drive
     to provide contextually enhanced responses.
-    FIXED: Better Drive service handling and logging.
     """
     
     def __init__(
@@ -23,7 +21,6 @@ class IntelligentOrchestrator:
     ):
         """
         Initialize the orchestrator.
-        FIXED: Better service validation and logging.
         
         Args:
             drive_service: Authenticated Google Drive service (optional)
@@ -62,7 +59,6 @@ class IntelligentOrchestrator:
     ) -> Dict[str, Any]:
         """
         Process user query with intelligent context retrieval and response generation.
-        FIXED: Always attempt Drive search when available with better error handling.
         """
         try:
             logger.info(f"🔍 Processing query: {user_input[:100]}...")
@@ -78,7 +74,7 @@ class IntelligentOrchestrator:
                 
                 try:
                     context_text, source_files = self.drive_utils.get_relevant_context(
-                        user_input, 
+                        user_input,
                         max_files=search_limit
                     )
                     
@@ -109,7 +105,7 @@ class IntelligentOrchestrator:
             # Update conversation history
             self.conversation_history.append({"role": "user", "content": user_input})
             self.conversation_history.append({
-                "role": "assistant", 
+                "role": "assistant",
                 "content": response_data["response"]
             })
             

@@ -1,5 +1,5 @@
-__version__ = "1.0.0"
 from .auth import GoogleDriveAuth
+from .drive_utils import GoogleDriveUtils
 from .file_processing import FileProcessor
 
-__all__ = ["GoogleDriveAuth", "FileProcessor"]
+__all__ = ['GoogleDriveAuth', 'GoogleDriveUtils', 'FileProcessor']
