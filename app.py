@@ -40,37 +40,11 @@ def check_credentials():
         if hasattr(st, "secrets"):
             has_secrets = ("GOOGLE_CLIENT_ID" in st.secrets and 
                           "GOOGLE_CLIENT_SECRET" in st.secrets)
-    except:
+    except Exception as e:
+        logger.warning(f"Failed to check secrets: {e}")
         pass
     
     return has_local, has_secrets
-
-# In your sidebar section, replace the credential check:
-# Check credential availability
-has_local, has_secrets = check_credentials()
-
-if not has_local and not has_secrets:
-    st.error("❌ Google Drive credentials not found")
-    st.info("""
-    **For Streamlit Cloud (Recommended):**
-    1. Go to your Streamlit Cloud app settings
-    2. Navigate to "Secrets" section  
-    3. Add your Google OAuth credentials:
-    ```
-    GOOGLE_CLIENT_ID = "your_client_id.apps.googleusercontent.com"
-    GOOGLE_CLIENT_SECRET = "your_client_secret"
-    ```
-    
-    **For Local Development:**
-    1. Download `credentials.json` from Google Cloud Console
-    2. Place it in your project root directory
-    """)
-else:
-    if has_secrets:
-        st.success("✅ Google credentials found in Streamlit secrets")
-    if has_local:
-        st.success("✅ Local credentials.json found")
-
 
 def display_chat_history():
     """Display chat history"""
@@ -120,7 +94,12 @@ def main():
         # Check credential availability
         has_local, has_secrets = check_credentials()
         
-        if not has_local and not has_secrets:
+        # Show credential status
+        if has_secrets:
+            st.success("✅ Google credentials found in Streamlit secrets")
+        elif has_local:
+            st.success("✅ Local credentials.json found")
+        else:
             st.error("❌ Google Drive credentials not found")
             st.info("""
             **To enable Google Drive integration:**
@@ -139,6 +118,7 @@ def main():
             2. Place it in your project root directory
             """)
         
+        # Authentication button logic
         if not st.session_state.drive_authenticated:
             if has_local or has_secrets:
                 if st.button("🔗 Connect to Google Drive", type="primary"):
@@ -158,8 +138,6 @@ def main():
                                 st.success("✅ Successfully connected to Google Drive!")
                                 logger.info("Google Drive authentication successful - service stored in session")
                                 st.rerun()
-                            else:
-                                st.error("❌ Authentication failed")
                     except Exception as e:
                         st.error(f"❌ Authentication error: {str(e)}")
                         logger.error(f"Authentication error: {e}")
@@ -186,7 +164,7 @@ def main():
             st.session_state.messages = []
             st.rerun()
     
-    # Initialize orchestrator (FIXED: Always check for Drive service)
+    # Initialize orchestrator
     if st.session_state.orchestrator is None and openrouter_key:
         try:
             from agent.orchestrator import IntelligentOrchestrator
