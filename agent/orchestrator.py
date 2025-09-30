@@ -1,7 +1,7 @@
 import logging
 from typing import Dict, List, Optional, Any
 from agent.chat_agent import ChatGPTAgent
-from agent.drive_utils import GoogleDriveUtils  # FIXED: Changed from agent.drive_utils
+from utils.drive_utils import GoogleDriveUtils  # ✅ Import from utils, not agent
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -86,7 +86,6 @@ class IntelligentOrchestrator:
                         
                 except Exception as e:
                     logger.error(f"❌ Error during Drive search: {e}")
-                    # Continue without context rather than failing completely
                     context_text = ""
                     source_files = []
             else:
@@ -114,7 +113,7 @@ class IntelligentOrchestrator:
             if len(self.conversation_history) > 20:
                 self.conversation_history = self.conversation_history[-20:]
             
-            # Prepare final response with detailed metadata
+            # Prepare final response
             final_response = {
                 "response": response_data["response"],
                 "context_used": bool(context_text and context_text.strip()),

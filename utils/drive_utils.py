@@ -50,7 +50,6 @@ class GoogleDriveUtils:
     ) -> List[Dict[str, Any]]:
         """
         Search for files in Google Drive with optional filtering.
-        FIXED: Better filename matching for exact and partial queries.
         """
         try:
             search_query_parts = []
@@ -67,7 +66,7 @@ class GoogleDriveUtils:
                 terms = [term for term in re.findall(r'\w+', clean_query) if len(term) > 2]
                 
                 if terms:
-                    # FIXED: Use OR logic for broader matching
+                    # Use OR logic for broader matching
                     name_conditions = []
                     for term in terms:
                         name_conditions.append(f"name contains '{term}'")
@@ -98,7 +97,7 @@ class GoogleDriveUtils:
                 q=final_query,
                 pageSize=limit,
                 fields="files(id, name, mimeType, size, modifiedTime, createdTime, webViewLink)",
-                orderBy="modifiedTime desc"  # Most recent first
+                orderBy="modifiedTime desc"
             ).execute()
             
             files = results.get('files', [])
@@ -168,7 +167,7 @@ class GoogleDriveUtils:
             return None
     
     def _extract_pdf_content(self, file_id: str) -> Optional[str]:
-        """Extract text content from PDF files with enhanced error handling."""
+        """Extract text content from PDF files."""
         try:
             logger.info(f"Starting PDF extraction for file_id: {file_id}")
             
@@ -185,7 +184,7 @@ class GoogleDriveUtils:
             
             file_content.seek(0)
             
-            # Try to read PDF with PyPDF2
+            # Read PDF with PyPDF2
             try:
                 pdf_reader = PyPDF2.PdfReader(file_content)
                 text_content = ""
@@ -310,9 +309,8 @@ class GoogleDriveUtils:
             
             content = file_content.getvalue().decode('utf-8', errors='ignore')
             
-            # Convert markdown to plain text for better context
+            # Convert markdown to plain text
             html = markdown.markdown(content)
-            # Simple HTML to text conversion
             text = re.sub('<[^<]+?>', '', html)
             return self.file_processor.clean_text(text)
             
@@ -362,7 +360,6 @@ class GoogleDriveUtils:
                 logger.info(f"Extracted exact filename from query: '{filename}'")
                 search_query = filename
             else:
-                # Use full query for search
                 search_query = user_query
             
             # Search for files
@@ -372,21 +369,17 @@ class GoogleDriveUtils:
                 logger.warning(f"No files found for query: '{user_query}'")
                 return "", []
             
-            # Rank files by relevance to query
+            # Rank files by relevance
             def calculate_relevance(file_info):
-                """Calculate relevance score based on filename similarity"""
                 filename = file_info['name'].lower()
                 query_terms = set(re.findall(r'\w+', user_query.lower()))
                 file_terms = set(re.findall(r'\w+', filename))
                 
-                # Count matching terms
                 matches = len(query_terms.intersection(file_terms))
                 
-                # Bonus for PDF files when query mentions PDF
                 if 'pdf' in user_query.lower() and filename.endswith('.pdf'):
                     matches += 2
                 
-                # Bonus for exact or near-exact filename match
                 clean_query = re.sub(r'[^a-z0-9]+', '', user_query.lower())
                 clean_filename = re.sub(r'[^a-z0-9]+', '', filename)
                 
@@ -398,7 +391,7 @@ class GoogleDriveUtils:
             # Sort files by relevance
             files.sort(key=calculate_relevance, reverse=True)
             
-            # Extract content from top files
+            # Extract content
             context_parts = []
             source_files = []
             successful_extractions = 0
@@ -413,7 +406,6 @@ class GoogleDriveUtils:
                 )
                 
                 if content and len(content.strip()) > 50:
-                    # Add file header
                     file_header = f"\n{'='*60}\nFile: {file_info['name']}\nType: {file_info['type_name']}\n{'='*60}\n"
                     context_parts.append(file_header + content)
                     
@@ -428,11 +420,9 @@ class GoogleDriveUtils:
                 else:
                     logger.warning(f"⚠️ No usable content from '{file_info['name']}'")
                 
-                # Limit context to prevent overload
                 if successful_extractions >= 3:
                     break
             
-            # Combine all context
             combined_context = "\n".join(context_parts)
             
             logger.info(f"Context retrieval complete: {successful_extractions} files processed, {len(combined_context)} total characters")
