@@ -12,6 +12,7 @@ import markdown
 import re
 from utils.file_processing import FileProcessor
 
+# Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -24,6 +25,7 @@ class GoogleDriveUtils:
     def __init__(self, drive_service):
         """
         Initialize with authenticated Google Drive service.
+        
         Args:
             drive_service: Authenticated Google Drive API service object
         """
@@ -43,8 +45,8 @@ class GoogleDriveUtils:
         logger.info("Google Drive Utils initialized")
     
     def search_files(
-        self,
-        query: Optional[str] = None,
+        self, 
+        query: Optional[str] = None, 
         file_types: Optional[List[str]] = None,
         limit: int = 20
     ) -> List[Dict[str, Any]]:
@@ -56,25 +58,22 @@ class GoogleDriveUtils:
             
             # Build search query
             if query:
-                # Clean the query - remove file extensions
+                # Clean the query - remove file extensions and special characters
                 clean_query = re.sub(r'\.(pdf|docx?|txt|csv)$', '', query, flags=re.IGNORECASE)
-                clean_query = clean_query.strip()
+                clean_query = re.sub(r'[^\w\s-]', ' ', clean_query).strip()
                 
-                logger.info(f"Original query: '{query}', Cleaned: '{clean_query}'")
-                
-                # Extract meaningful terms (more than 2 characters)
-                terms = [term for term in re.findall(r'\w+', clean_query) if len(term) > 2]
+                # Split into individual terms for more flexible matching
+                terms = [term for term in clean_query.split() if len(term) > 2]
                 
                 if terms:
-                    # Use OR logic for broader matching
+                    # Create search conditions - use OR for more flexible matching
                     name_conditions = []
                     for term in terms:
                         name_conditions.append(f"name contains '{term}'")
                     
                     if name_conditions:
-                        # Use OR to match any term in filename
+                        # Use OR instead of AND for broader matching
                         search_query_parts.append(f"({' or '.join(name_conditions)})")
-                        logger.info(f"Search terms: {terms}")
             
             # Filter by supported file types
             if not file_types:
@@ -88,25 +87,29 @@ class GoogleDriveUtils:
             search_query_parts.append("trashed=false")
             
             # Combine query parts
-            final_query = " and ".join(search_query_parts)
+            if len(search_query_parts) > 1:
+                final_query = " and ".join(search_query_parts)
+            else:
+                # Default query - all supported files
+                type_queries = [f"mimeType='{mime_type}'" for mime_type in self.supported_types.keys()]
+                final_query = f"({' or '.join(type_queries)}) and trashed=false"
             
-            logger.info(f"Final Drive query: {final_query}")
+            logger.info(f"Searching Drive with query: {final_query}")
             
             # Execute search
             results = self.service.files().list(
                 q=final_query,
                 pageSize=limit,
                 fields="files(id, name, mimeType, size, modifiedTime, createdTime, webViewLink)",
-                orderBy="modifiedTime desc"
+                orderBy="name"
             ).execute()
             
             files = results.get('files', [])
-            
-            logger.info(f"Found {len(files)} files matching criteria")
+            logger.info(f"Found {len(files)} files")
             
             # Log all found files for debugging
             for file in files:
-                logger.info(f"  - {file['name']} ({file['mimeType']})")
+                logger.info(f"Found file: {file['name']} ({file['mimeType']})")
             
             # Enrich file data
             enriched_files = []
@@ -133,12 +136,13 @@ class GoogleDriveUtils:
             return []
     
     def get_file_content(self, file_id: str, mime_type: str, file_name: str = "") -> Optional[str]:
-        """Extract text content from a Google Drive file."""
+        """
+        Extract text content from a Google Drive file.
+        """
         try:
             logger.info(f"Extracting content from file '{file_name}' (ID: {file_id}, type: {mime_type})")
             
             content = None
-            
             if mime_type == 'application/vnd.google-apps.document':
                 content = self._extract_google_doc_content(file_id)
             elif mime_type == 'text/plain':
@@ -166,8 +170,8 @@ class GoogleDriveUtils:
             logger.error(f"Error extracting content from '{file_name}' ({file_id}): {str(e)}")
             return None
     
-    def _extract_pdf_content(self, file_id: str) -> Optional[str]:
-        """Extract text content from PDF files."""
+    def _extract_pdf_content(self, file_id: str) -> str:
+        """Extract text content from PDF files with enhanced error handling."""
         try:
             logger.info(f"Starting PDF extraction for file_id: {file_id}")
             
@@ -184,7 +188,7 @@ class GoogleDriveUtils:
             
             file_content.seek(0)
             
-            # Read PDF with PyPDF2
+            # Try to read PDF with PyPDF2
             try:
                 pdf_reader = PyPDF2.PdfReader(file_content)
                 text_content = ""
@@ -202,7 +206,6 @@ class GoogleDriveUtils:
                             logger.info(f"Extracted {len(page_text)} characters from page {page_num + 1}")
                         else:
                             logger.warning(f"No text found on page {page_num + 1}")
-                    
                     except Exception as page_error:
                         logger.error(f"Error extracting page {page_num + 1}: {str(page_error)}")
                         continue
@@ -218,16 +221,16 @@ class GoogleDriveUtils:
             except Exception as pdf_error:
                 logger.error(f"PyPDF2 extraction failed: {str(pdf_error)}")
                 return None
-                
+                    
         except Exception as e:
             logger.error(f"Critical error in PDF extraction: {str(e)}")
             return None
     
-    def _extract_google_doc_content(self, file_id: str) -> Optional[str]:
+    def _extract_google_doc_content(self, file_id: str) -> str:
         """Extract content from Google Docs."""
         try:
             request = self.service.files().export_media(
-                fileId=file_id,
+                fileId=file_id, 
                 mimeType='text/plain'
             )
             
@@ -245,10 +248,11 @@ class GoogleDriveUtils:
             logger.error(f"Error extracting Google Doc content: {str(e)}")
             return None
     
-    def _extract_text_file_content(self, file_id: str) -> Optional[str]:
+    def _extract_text_file_content(self, file_id: str) -> str:
         """Extract content from text files."""
         try:
             request = self.service.files().get_media(fileId=file_id)
+            
             file_content = io.BytesIO()
             downloader = MediaIoBaseDownload(file_content, request)
             
@@ -263,10 +267,11 @@ class GoogleDriveUtils:
             logger.error(f"Error extracting text file content: {str(e)}")
             return None
     
-    def _extract_csv_content(self, file_id: str) -> Optional[str]:
+    def _extract_csv_content(self, file_id: str) -> str:
         """Extract and summarize CSV content."""
         try:
             request = self.service.files().get_media(fileId=file_id)
+            
             file_content = io.BytesIO()
             downloader = MediaIoBaseDownload(file_content, request)
             
@@ -296,10 +301,11 @@ class GoogleDriveUtils:
             logger.error(f"Error extracting CSV content: {str(e)}")
             return None
     
-    def _extract_markdown_content(self, file_id: str) -> Optional[str]:
+    def _extract_markdown_content(self, file_id: str) -> str:
         """Extract content from Markdown files."""
         try:
             request = self.service.files().get_media(fileId=file_id)
+            
             file_content = io.BytesIO()
             downloader = MediaIoBaseDownload(file_content, request)
             
@@ -309,19 +315,22 @@ class GoogleDriveUtils:
             
             content = file_content.getvalue().decode('utf-8', errors='ignore')
             
-            # Convert markdown to plain text
+            # Convert markdown to plain text for better context
             html = markdown.markdown(content)
+            # Simple HTML to text conversion
             text = re.sub('<[^<]+?>', '', html)
+            
             return self.file_processor.clean_text(text)
             
         except Exception as e:
             logger.error(f"Error extracting Markdown content: {str(e)}")
             return None
     
-    def _extract_word_content(self, file_id: str) -> Optional[str]:
+    def _extract_word_content(self, file_id: str) -> str:
         """Extract content from Word documents."""
         try:
             request = self.service.files().get_media(fileId=file_id)
+            
             file_content = io.BytesIO()
             downloader = MediaIoBaseDownload(file_content, request)
             
@@ -343,86 +352,132 @@ class GoogleDriveUtils:
             return None
     
     def get_relevant_context(
-        self,
-        user_query: str,
+        self, 
+        user_query: str, 
         max_files: int = 10
     ) -> Tuple[str, List[Dict[str, str]]]:
         """
         Search for and extract relevant context from Google Drive files.
+        FIXED: Better filename extraction and search logic.
         """
         try:
             logger.info(f"Getting relevant context for query: '{user_query}'")
             
-            # Extract potential filename from query
-            filename_match = re.search(r'["\']([^"\']+\.(?:pdf|docx?|txt|csv))["\']', user_query, re.IGNORECASE)
-            if filename_match:
-                filename = filename_match.group(1)
-                logger.info(f"Extracted exact filename from query: '{filename}'")
-                search_query = filename
-            else:
-                search_query = user_query
+            # FIXED: Better filename extraction patterns
+            potential_filename = None
+            query_lower = user_query.lower()
             
-            # Search for files
-            files = self.search_files(query=search_query, limit=max_files)
+            # More precise patterns to extract just the filename
+            file_patterns = [
+                r'[\'"]([\w\s\-\.]+\.(?:pdf|docx?|txt|csv))[\'"]',  # "filename.ext" in quotes
+                r'\bfile\s+[\'"]([\w\s\-\.]+)[\'"]',  # file "name" 
+                r'\bdocument\s+[\'"]([\w\s\-\.]+)[\'"]',  # document "name"
+                r'\b([\w\s\-]+\.(?:pdf|docx?|txt|csv))\b',  # filename.ext without quotes
+                r'\b([\w\s\-]*cv[\w\s\-]*\.pdf)\b',  # cv files specifically
+                r'\b([\w\s\-]*resume[\w\s\-]*\.(?:pdf|docx?))\b'  # resume files
+            ]
             
-            if not files:
-                logger.warning(f"No files found for query: '{user_query}'")
+            for pattern in file_patterns:
+                matches = re.findall(pattern, user_query, re.IGNORECASE)
+                if matches:
+                    potential_filename = matches[0].strip()
+                    logger.info(f"Found potential filename in query: '{potential_filename}'")
+                    break
+            
+            # Extract keywords from query for fallback search
+            keywords = self.file_processor.extract_keywords(user_query)
+            
+            # FIRST: Try exact/similar filename search
+            relevant_files = []
+            if potential_filename:
+                logger.info(f"Searching for specific file: '{potential_filename}'")
+                
+                # Clean filename for search
+                clean_filename = potential_filename.replace('.pdf', '').replace('.docx', '').replace('.txt', '')
+                
+                relevant_files = self.search_files(query=clean_filename, limit=max_files)
+                
+                # If exact search fails, try with individual words from filename
+                if not relevant_files:
+                    filename_words = clean_filename.split()
+                    if len(filename_words) > 1:
+                        logger.info(f"Trying search with filename words: {filename_words}")
+                        relevant_files = self.search_files(query=' '.join(filename_words), limit=max_files)
+            
+            # SECOND: Try keyword-based search if no files found
+            if not relevant_files and keywords:
+                logger.info(f"No specific file found, trying keyword search: {keywords}")
+                search_query = " ".join(keywords[:3])
+                relevant_files = self.search_files(query=search_query, limit=max_files)
+            
+            # THIRD: Get all files as last resort
+            if not relevant_files:
+                logger.info("No files found with keywords, getting all supported files")
+                relevant_files = self.search_files(limit=max_files)
+            
+            if not relevant_files:
+                logger.info("No files found in Drive")
                 return "", []
             
-            # Rank files by relevance
-            def calculate_relevance(file_info):
-                filename = file_info['name'].lower()
-                query_terms = set(re.findall(r'\w+', user_query.lower()))
-                file_terms = set(re.findall(r'\w+', filename))
-                
-                matches = len(query_terms.intersection(file_terms))
-                
-                if 'pdf' in user_query.lower() and filename.endswith('.pdf'):
-                    matches += 2
-                
-                clean_query = re.sub(r'[^a-z0-9]+', '', user_query.lower())
-                clean_filename = re.sub(r'[^a-z0-9]+', '', filename)
-                
-                if clean_query in clean_filename or clean_filename in clean_query:
-                    matches += 5
-                
-                return matches
+            logger.info(f"Found {len(relevant_files)} potentially relevant files")
             
-            # Sort files by relevance
-            files.sort(key=calculate_relevance, reverse=True)
-            
-            # Extract content
+            # Extract content from files
             context_parts = []
             source_files = []
             successful_extractions = 0
             
-            for file_info in files[:max_files]:
-                logger.info(f"Processing file: {file_info['name']} (relevance: {calculate_relevance(file_info)})")
+            # Sort files by relevance if we have a specific filename
+            if potential_filename:
+                clean_target = potential_filename.lower().replace('.pdf', '').replace('.docx', '').replace('.txt', '')
+                relevant_files.sort(key=lambda x: self._calculate_filename_similarity(x['name'].lower(), clean_target), reverse=True)
+            
+            for file_info in relevant_files:
+                logger.info(f"Processing file: '{file_info['name']}'")
                 
                 content = self.get_file_content(
-                    file_info['id'],
+                    file_info['id'], 
                     file_info['mimeType'],
                     file_info['name']
                 )
                 
-                if content and len(content.strip()) > 50:
-                    file_header = f"\n{'='*60}\nFile: {file_info['name']}\nType: {file_info['type_name']}\n{'='*60}\n"
-                    context_parts.append(file_header + content)
+                if content and len(content.strip()) > 50:  # Only use files with substantial content
+                    # Truncate content to prevent token overflow
+                    truncated_content = self.file_processor.truncate_content(content, max_length=1500)
+                    
+                    context_parts.append(
+                        f"--- Content from file: {file_info['name']} ({file_info['type_name']}) ---\n"
+                        f"{truncated_content}\n"
+                    )
                     
                     source_files.append({
                         'id': file_info['id'],
                         'name': file_info['name'],
-                        'type': file_info['type_name']
+                        'type': file_info['type_name'],
+                        'url': file_info['url'],
+                        'modified': file_info.get('modified', 'Unknown'),
+                        'created': file_info.get('created', 'Unknown')
                     })
                     
                     successful_extractions += 1
-                    logger.info(f"✅ Successfully extracted content from '{file_info['name']}'")
+                    logger.info(f"Successfully processed '{file_info['name']}' - {len(content)} characters extracted")
+                    
+                    # If we found the target file, prioritize it and maybe stop
+                    if potential_filename and self._calculate_filename_similarity(file_info['name'].lower(), potential_filename.lower()) > 0.7:
+                        logger.info(f"Found high-match target file: '{file_info['name']}' - prioritizing")
+                        # Move this file's content to the beginning
+                        if len(context_parts) > 1:
+                            context_parts.insert(0, context_parts.pop())
+                            source_files.insert(0, source_files.pop())
+                        break
+                        
                 else:
-                    logger.warning(f"⚠️ No usable content from '{file_info['name']}'")
+                    logger.warning(f"No usable content from '{file_info['name']}' - skipping")
                 
+                # Limit to prevent too much context
                 if successful_extractions >= 3:
                     break
             
+            # Combine all context
             combined_context = "\n".join(context_parts)
             
             logger.info(f"Context retrieval complete: {successful_extractions} files processed, {len(combined_context)} total characters")
@@ -432,3 +487,17 @@ class GoogleDriveUtils:
         except Exception as e:
             logger.error(f"Error getting relevant context: {str(e)}")
             return "", []
+    
+    def _calculate_filename_similarity(self, filename1: str, filename2: str) -> float:
+        """Calculate similarity between two filenames."""
+        # Simple similarity based on common words
+        words1 = set(re.findall(r'\w+', filename1.lower()))
+        words2 = set(re.findall(r'\w+', filename2.lower()))
+        
+        if not words1 or not words2:
+            return 0.0
+        
+        intersection = words1.intersection(words2)
+        union = words1.union(words2)
+        
+        return len(intersection) / len(union) if union else 0.0

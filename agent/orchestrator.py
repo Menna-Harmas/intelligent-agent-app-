@@ -1,7 +1,7 @@
 import logging
 from typing import Dict, List, Optional, Any
-from agent.chat_agent import ChatGPTAgent
-from utils.drive_utils import GoogleDriveUtils  # ✅ Import from utils, not agent
+from .chat_agent import ChatGPTAgent
+from utils.drive_utils import GoogleDriveUtils
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -11,6 +11,7 @@ class IntelligentOrchestrator:
     """
     Main orchestrator that coordinates between ChatGPT agent and Google Drive
     to provide contextually enhanced responses.
+    FIXED: Better Drive service handling and logging.
     """
     
     def __init__(
@@ -22,6 +23,7 @@ class IntelligentOrchestrator:
     ):
         """
         Initialize the orchestrator.
+        FIXED: Better service validation and logging.
         
         Args:
             drive_service: Authenticated Google Drive service (optional)
@@ -60,6 +62,7 @@ class IntelligentOrchestrator:
     ) -> Dict[str, Any]:
         """
         Process user query with intelligent context retrieval and response generation.
+        FIXED: Always attempt Drive search when available with better error handling.
         """
         try:
             logger.info(f"🔍 Processing query: {user_input[:100]}...")
@@ -75,7 +78,7 @@ class IntelligentOrchestrator:
                 
                 try:
                     context_text, source_files = self.drive_utils.get_relevant_context(
-                        user_input,
+                        user_input, 
                         max_files=search_limit
                     )
                     
@@ -86,6 +89,7 @@ class IntelligentOrchestrator:
                         
                 except Exception as e:
                     logger.error(f"❌ Error during Drive search: {e}")
+                    # Continue without context rather than failing completely
                     context_text = ""
                     source_files = []
             else:
@@ -105,7 +109,7 @@ class IntelligentOrchestrator:
             # Update conversation history
             self.conversation_history.append({"role": "user", "content": user_input})
             self.conversation_history.append({
-                "role": "assistant",
+                "role": "assistant", 
                 "content": response_data["response"]
             })
             
@@ -113,7 +117,7 @@ class IntelligentOrchestrator:
             if len(self.conversation_history) > 20:
                 self.conversation_history = self.conversation_history[-20:]
             
-            # Prepare final response
+            # Prepare final response with detailed metadata
             final_response = {
                 "response": response_data["response"],
                 "context_used": bool(context_text and context_text.strip()),
