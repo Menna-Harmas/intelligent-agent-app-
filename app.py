@@ -34,17 +34,21 @@ def init_session_state():
 def check_credentials():
     """Check if Google credentials are available"""
     has_local = os.path.exists("credentials.json")
-    has_secrets = False
+    has_oauth_secrets = False
+    has_service_account = False
     
     try:
         if hasattr(st, "secrets"):
-            has_secrets = ("GOOGLE_CLIENT_ID" in st.secrets and 
-                          "GOOGLE_CLIENT_SECRET" in st.secrets)
+            # Check for OAuth credentials (preferred for user's personal Drive)
+            has_oauth_secrets = ("GOOGLE_CLIENT_ID" in st.secrets and 
+                               "GOOGLE_CLIENT_SECRET" in st.secrets)
+            # Check for service account (fallback)
+            has_service_account = "GOOGLE_SERVICE_ACCOUNT_JSON" in st.secrets
     except Exception as e:
         logger.warning(f"Failed to check secrets: {e}")
         pass
     
-    return has_local, has_secrets
+    return has_local, has_oauth_secrets, has_service_account
 
 def display_chat_history():
     """Display chat history"""
@@ -92,36 +96,45 @@ def main():
         st.markdown("### 🔐 Google Drive Authentication")
         
         # Check credential availability
-        has_local, has_secrets = check_credentials()
+        has_local, has_oauth_secrets, has_service_account = check_credentials()
         
-        # Show credential status
-        if has_secrets:
-            st.success("✅ Google credentials found in Streamlit secrets")
+        # Show credential status and priority
+        if has_oauth_secrets:
+            st.success("✅ OAuth credentials found (Personal Drive Access)")
+            st.info("🔑 Using OAuth for accessing **your personal** Google Drive")
         elif has_local:
-            st.success("✅ Local credentials.json found")
+            st.success("✅ Local OAuth credentials.json found")
+        elif has_service_account:
+            st.warning("⚠️ Service Account found (Limited Access)")
+            st.info("📋 Service accounts can only access files **shared with them**")
         else:
             st.error("❌ Google Drive credentials not found")
             st.info("""
             **To enable Google Drive integration:**
             
-            **Option 1: Streamlit Secrets (Recommended for deployment)**
+            **Option 1: OAuth (Recommended - Access YOUR personal Drive)**
             1. Go to your app settings in Streamlit Cloud
             2. Navigate to "Secrets" section
             3. Add your Google OAuth credentials:
             ```
-            GOOGLE_CLIENT_ID = "your_client_id"
+            GOOGLE_CLIENT_ID = "your_client_id.apps.googleusercontent.com"
             GOOGLE_CLIENT_SECRET = "your_client_secret"
             ```
             
             **Option 2: Local Development**
-            1. Download `credentials.json` from Google Cloud Console
+            1. Download OAuth `credentials.json` from Google Cloud Console
             2. Place it in your project root directory
+            
+            **Note:** Service accounts can only access files shared with them, 
+            not your personal Drive files.
             """)
         
         # Authentication button logic
         if not st.session_state.drive_authenticated:
-            if has_local or has_secrets:
-                if st.button("🔗 Connect to Google Drive", type="primary"):
+            if has_local or has_oauth_secrets or has_service_account:
+                auth_method = "OAuth" if (has_local or has_oauth_secrets) else "Service Account"
+                
+                if st.button(f"🔗 Connect to Google Drive ({auth_method})", type="primary"):
                     try:
                         with st.spinner("Authenticating with Google Drive..."):
                             from utils.auth import GoogleDriveAuth
@@ -246,4 +259,3 @@ def main():
 
 if __name__ == "__main__":
     main()
- 

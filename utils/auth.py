@@ -5,6 +5,7 @@ import tempfile
 from typing import Optional, Dict
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
+from google.oauth2.service_account import Credentials as ServiceAccountCredentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
@@ -33,25 +34,54 @@ class GoogleDriveAuth:
     def _env_info(self) -> Dict[str, bool]:
         """Check available credential sources"""
         has_local = os.path.exists(self.credentials_file)
-        has_secrets = False
+        has_oauth_secrets = False
+        has_service_account = False
         can_access = False
         
         try:
             if hasattr(st, "secrets"):
                 _ = dict(st.secrets)
                 can_access = True
-                has_secrets = ("GOOGLE_CLIENT_ID" in st.secrets and 
-                              "GOOGLE_CLIENT_SECRET" in st.secrets)
+                has_oauth_secrets = ("GOOGLE_CLIENT_ID" in st.secrets and 
+                                   "GOOGLE_CLIENT_SECRET" in st.secrets)
+                has_service_account = "GOOGLE_SERVICE_ACCOUNT_JSON" in st.secrets
         except Exception as e:
             logger.warning(f"Cannot access Streamlit secrets: {e}")
         
-        return {"local": has_local, "secrets": has_secrets, "can_access": can_access}
+        return {
+            "local": has_local, 
+            "oauth_secrets": has_oauth_secrets, 
+            "service_account": has_service_account,
+            "can_access": can_access
+        }
     
-    def _create_temp_credentials(self) -> Optional[str]:
-        """Create temporary credentials file from Streamlit secrets"""
+    def _authenticate_with_service_account(self) -> Optional[object]:
+        """Authenticate using service account credentials"""
+        try:
+            if hasattr(st, "secrets") and "GOOGLE_SERVICE_ACCOUNT_JSON" in st.secrets:
+                # Parse service account JSON
+                service_account_info = json.loads(st.secrets["GOOGLE_SERVICE_ACCOUNT_JSON"])
+                
+                # Create service account credentials
+                self.credentials = ServiceAccountCredentials.from_service_account_info(
+                    service_account_info, scopes=self.SCOPES
+                )
+                
+                logger.info("✅ Service account authentication successful")
+                return self._build_service()
+            else:
+                logger.error("❌ Service account JSON not found in secrets")
+                return None
+                
+        except Exception as e:
+            logger.error(f"❌ Service account authentication failed: {e}")
+            return None
+    
+    def _create_temp_oauth_credentials(self) -> Optional[str]:
+        """Create temporary OAuth credentials file from Streamlit secrets"""
         info = self._env_info()
-        if not info["secrets"]:
-            logger.error("No Streamlit secrets found")
+        if not info["oauth_secrets"]:
+            logger.error("No OAuth secrets found")
             return None
         
         try:
@@ -69,22 +99,22 @@ class GoogleDriveAuth:
             
             # Create temporary file
             tf = tempfile.NamedTemporaryFile(
-                mode="w", suffix=".json", delete=False, prefix="tmp_creds_"
+                mode="w", suffix=".json", delete=False, prefix="tmp_oauth_"
             )
             json.dump(creds, tf, indent=2)
             tf.flush()
             tf.close()
             
             self._temp_creds_path = tf.name
-            logger.info(f"✅ Created temporary credentials file from secrets")
+            logger.info(f"✅ Created temporary OAuth credentials file from secrets")
             return tf.name
             
         except Exception as e:
-            logger.error(f"❌ Failed to create temp credentials: {e}")
+            logger.error(f"❌ Failed to create temp OAuth credentials: {e}")
             return None
     
-    def _load_existing_token(self) -> bool:
-        """Load existing token from secrets or local file"""
+    def _load_existing_oauth_token(self) -> bool:
+        """Load existing OAuth token from secrets or local file"""
         # Priority 1: Try loading from Streamlit secrets (refresh token)
         if hasattr(st, "secrets") and "GOOGLE_REFRESH_TOKEN" in st.secrets:
             try:
@@ -107,27 +137,26 @@ class GoogleDriveAuth:
                 self.credentials = Credentials.from_authorized_user_file(
                     self.token_file, self.SCOPES
                 )
-                logger.info("✅ Loaded credentials from local token file")
+                logger.info("✅ Loaded OAuth credentials from local token file")
                 return True
             except Exception as e:
                 logger.warning(f"⚠️ Failed to load local token: {e}")
         
         return False
     
-    def authenticate(self) -> Optional[object]:
-        """Authenticate with Google Drive API - Works for both local and cloud"""
+    def _authenticate_with_oauth(self) -> Optional[object]:
+        """Authenticate using OAuth flow"""
         info = self._env_info()
-        logger.info(f"🔍 Environment check: Local={info['local']}, Secrets={info['secrets']}")
         
         # Step 1: Try to load existing credentials
-        self._load_existing_token()
+        self._load_existing_oauth_token()
         
         # Step 2: Refresh if expired
         if (self.credentials and self.credentials.expired 
             and self.credentials.refresh_token):
             try: 
                 self.credentials.refresh(Request())
-                logger.info("🔄 Successfully refreshed expired credentials")
+                logger.info("🔄 Successfully refreshed expired OAuth credentials")
             except Exception as e:
                 logger.warning(f"⚠️ Failed to refresh credentials: {e}")
                 self.credentials = None
@@ -137,23 +166,14 @@ class GoogleDriveAuth:
             # Determine credential source
             if info["local"]:
                 secret_path = self.credentials_file
-                logger.info("📁 Using local credentials.json file")
-            elif info["secrets"]:
-                secret_path = self._create_temp_credentials()
+                logger.info("📁 Using local OAuth credentials.json file")
+            elif info["oauth_secrets"]:
+                secret_path = self._create_temp_oauth_credentials()
                 if not secret_path:
-                    raise Exception("❌ Failed to create temporary credentials file from secrets")
-                logger.info("☁️ Using Streamlit secrets for credentials")
+                    raise Exception("❌ Failed to create temporary OAuth credentials file from secrets")
+                logger.info("☁️ Using Streamlit OAuth secrets for credentials")
             else:
-                # Clear error message for missing credentials
-                raise Exception(
-                    "❌ No Google credentials available!\n\n"
-                    "**For Streamlit Cloud:**\n"
-                    "1. Go to your app settings → Secrets\n"
-                    "2. Add: GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET\n\n"
-                    "**For Local Development:**\n"
-                    "1. Download credentials.json from Google Cloud Console\n"
-                    "2. Place it in your project root directory"
-                )
+                raise Exception("❌ No OAuth credentials available")
             
             # Step 4: Create OAuth flow
             try:
@@ -167,7 +187,7 @@ class GoogleDriveAuth:
                 if is_cloud_deployment:
                     # Manual OAuth flow for cloud deployment
                     st.info("🔐 **Google Drive Authentication Required**")
-                    st.markdown("Please complete the OAuth process:")
+                    st.markdown("Please complete the OAuth process to access **your personal Google Drive**:")
                     
                     # Generate authorization URL
                     auth_url, _ = flow.authorization_url(
@@ -194,7 +214,7 @@ class GoogleDriveAuth:
                             flow.fetch_token(code=auth_code.strip())
                             self.credentials = flow.credentials
                             
-                            st.success("✅ **Authentication successful!**")
+                            st.success("✅ **OAuth Authentication successful!**")
                             
                             # Show refresh token for permanent setup
                             if self.credentials.refresh_token:
@@ -203,9 +223,10 @@ class GoogleDriveAuth:
                                 st.markdown("*Add this to your Streamlit Cloud app secrets*")
                             
                             st.balloons()
+                            return self._build_service()
                             
                         except Exception as e:
-                            st.error(f"❌ **Authentication failed:** {str(e)}")
+                            st.error(f"❌ **OAuth Authentication failed:** {str(e)}")
                             st.info("💡 Please try again with a fresh authorization code")
                             return None
                     else:
@@ -225,25 +246,23 @@ class GoogleDriveAuth:
                         # Save token locally for future use
                         with open(self.token_file, "w") as f:
                             f.write(self.credentials.to_json())
-                        logger.info("💾 Saved credentials to local token file")
+                        logger.info("💾 Saved OAuth credentials to local token file")
+                        
+                        return self._build_service()
                         
                     except Exception as e:
-                        logger.error(f"❌ Local server authentication failed: {e}")
-                        raise Exception(f"Local authentication failed: {str(e)}")
+                        logger.error(f"❌ Local OAuth authentication failed: {e}")
+                        raise Exception(f"Local OAuth authentication failed: {str(e)}")
                     
             except Exception as e:
                 logger.error(f"❌ OAuth flow creation failed: {e}")
                 raise Exception(f"OAuth flow failed: {str(e)}")
-        
-        # Step 5: Cleanup temporary files
-        if self._temp_creds_path:
-            try: 
-                os.unlink(self._temp_creds_path)
-                logger.info("🧹 Cleaned up temporary credentials file")
-            except: 
-                pass
-        
-        # Step 6: Build and test Google Drive service
+        else:
+            # Credentials are valid, build service
+            return self._build_service()
+    
+    def _build_service(self) -> Optional[object]:
+        """Build and test Google Drive service"""
         try:
             self.service = build('drive', 'v3', credentials=self.credentials)
             
@@ -259,3 +278,42 @@ class GoogleDriveAuth:
         except Exception as e:
             logger.error(f"❌ Service initialization failed: {e}")
             raise Exception(f"Service initialization failed: {str(e)}")
+    
+    def authenticate(self) -> Optional[object]:
+        """Authenticate with Google Drive API - Works for both local and cloud"""
+        info = self._env_info()
+        logger.info(f"🔍 Environment check: Local={info['local']}, OAuth={info['oauth_secrets']}, ServiceAccount={info['service_account']}")
+        
+        try:
+            # Priority 1: Try OAuth authentication (for personal Drive access)
+            if info["local"] or info["oauth_secrets"]:
+                logger.info("🔑 Attempting OAuth authentication (Personal Drive Access)")
+                return self._authenticate_with_oauth()
+            
+            # Priority 2: Fallback to service account (limited access)
+            elif info["service_account"]:
+                logger.info("🔧 Using Service Account authentication (Limited Access)")
+                st.warning("📋 **Using Service Account**: Can only access files shared with the service account")
+                return self._authenticate_with_service_account()
+            
+            else:
+                # No credentials available
+                raise Exception(
+                    "❌ No Google credentials available!\n\n"
+                    "**For Personal Drive Access (Recommended):**\n"
+                    "1. Go to your app settings → Secrets\n"
+                    "2. Add: GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET\n\n"
+                    "**For Local Development:**\n"
+                    "1. Download OAuth credentials.json from Google Cloud Console\n"
+                    "2. Place it in your project root directory\n\n"
+                    "**Note:** Service accounts can only access files shared with them."
+                )
+        
+        finally:
+            # Cleanup temporary files
+            if self._temp_creds_path:
+                try: 
+                    os.unlink(self._temp_creds_path)
+                    logger.info("🧹 Cleaned up temporary credentials file")
+                except: 
+                    pass
