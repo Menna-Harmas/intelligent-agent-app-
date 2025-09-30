@@ -45,6 +45,33 @@ def check_credentials():
     
     return has_local, has_secrets
 
+# In your sidebar section, replace the credential check:
+# Check credential availability
+has_local, has_secrets = check_credentials()
+
+if not has_local and not has_secrets:
+    st.error("❌ Google Drive credentials not found")
+    st.info("""
+    **For Streamlit Cloud (Recommended):**
+    1. Go to your Streamlit Cloud app settings
+    2. Navigate to "Secrets" section  
+    3. Add your Google OAuth credentials:
+    ```
+    GOOGLE_CLIENT_ID = "your_client_id.apps.googleusercontent.com"
+    GOOGLE_CLIENT_SECRET = "your_client_secret"
+    ```
+    
+    **For Local Development:**
+    1. Download `credentials.json` from Google Cloud Console
+    2. Place it in your project root directory
+    """)
+else:
+    if has_secrets:
+        st.success("✅ Google credentials found in Streamlit secrets")
+    if has_local:
+        st.success("✅ Local credentials.json found")
+
+
 def display_chat_history():
     """Display chat history"""
     st.markdown("### 💬 Conversation History")
