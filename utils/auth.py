@@ -146,13 +146,7 @@ class GoogleDriveAuth:
             else:
                 # Clear error message for missing credentials
                 raise Exception(
-                    "❌ No Google credentials available!\n\n"
-                    "**For Streamlit Cloud:**\n"
-                    "1. Go to your app settings → Secrets\n"
-                    "2. Add: GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET\n\n"
-                    "**For Local Development:**\n"
-                    "1. Download credentials.json from Google Cloud Console\n"
-                    "2. Place it in your project root directory"
+                    "❌ Google Drive authentication failed: Credentials file 'credentials.json' not found. Please download it from Google Cloud Console."
                 )
             
             # Step 4: Create OAuth flow
