@@ -7,8 +7,10 @@ import logging
 load_dotenv()
 
 # Configure logging
-logging.basicConfig(level=logging.INFO,
-                   format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
 st.set_page_config(
@@ -28,34 +30,49 @@ def init_session_state():
         st.session_state.orchestrator = None
     if 'drive_service' not in st.session_state:
         st.session_state.drive_service = None
+    if 'auth_attempted' not in st.session_state:
+        st.session_state.auth_attempted = False
+
+def get_api_key():
+    """Get OpenRouter API key from environment or secrets"""
+    api_key = os.getenv("OPENROUTER_API_KEY")
+    if not api_key:
+        try:
+            api_key = st.secrets.get("OPENROUTER_API_KEY")
+        except:
+            pass
+    return api_key
 
 def check_credentials():
     """Check if Google credentials are available"""
     has_local = os.path.exists("credentials.json")
     has_oauth_secrets = False
+    has_refresh_token = False
     
     try:
         if hasattr(st, "secrets"):
-            has_oauth_secrets = ("GOOGLE_CLIENT_ID" in st.secrets and
-                               "GOOGLE_CLIENT_SECRET" in st.secrets)
+            has_oauth_secrets = (
+                "GOOGLE_CLIENT_ID" in st.secrets and
+                "GOOGLE_CLIENT_SECRET" in st.secrets
+            )
+            has_refresh_token = "GOOGLE_REFRESH_TOKEN" in st.secrets
     except Exception as e:
         logger.warning(f"Failed to check secrets: {e}")
     
-    return has_local, has_oauth_secrets
+    return has_local, has_oauth_secrets, has_refresh_token
 
 def display_chat_history():
     """Display chat history"""
-    st.markdown("### 💬 Conversation History")
     for message in st.session_state.messages:
-        with st.chat_message(message["role"],
-                           avatar="🤖" if message["role"] == "assistant" else "👤"):
+        with st.chat_message(message["role"], 
+                            avatar="🤖" if message["role"] == "assistant" else "👤"):
             st.write(message["content"])
             
             # Show context sources if available
             if message.get("sources"):
                 with st.expander("📁 Sources Used"):
                     for source in message["sources"]:
-                        st.write(f"• **{source['name']}** (ID: {source['id']})")
+                        st.write(f"• **{source['name']}** ({source.get('type', 'Unknown')})")
 
 def main():
     # Initialize session state
@@ -64,109 +81,118 @@ def main():
     # Header
     st.markdown("""
     # 🤖 Intelligent AI Agent
-    ### ChatGPT-3.5 Turbo with Google Drive Context Integration
-    """, unsafe_allow_html=True)
+    ### ChatGPT with Google Drive Context Integration
+    """)
+    
+    # Check API key first
+    openrouter_key = get_api_key()
     
     # Sidebar for configuration
     with st.sidebar:
         st.markdown("## ⚙️ Configuration")
         
         # API Key Status
-        openrouter_key = os.getenv("OPENROUTER_API_KEY")
-        if not openrouter_key:
-            try:
-                openrouter_key = st.secrets.get("OPENROUTER_API_KEY")
-            except:
-                pass
-        
         if openrouter_key:
             st.success("✅ OpenRouter API Key Found")
         else:
             st.error("❌ OpenRouter API Key Missing")
-            st.info("Please set OPENROUTER_API_KEY in your .env file or Streamlit secrets")
-            return
+            st.info("""
+            **Setup:**
+            1. Get your API key from [OpenRouter](https://openrouter.ai)
+            2. Add to `.env` file or Streamlit secrets:
+            ```
+            OPENROUTER_API_KEY = "your-key-here"
+            ```
+            """)
+            st.stop()
         
         # Google Drive Authentication
-        st.markdown("### 🔐 Google Drive Authentication")
+        st.markdown("### 🔐 Google Drive")
         
-        # Check credential availability
-        has_local, has_oauth_secrets = check_credentials()
+        has_local, has_oauth_secrets, has_refresh_token = check_credentials()
         
         # Show credential status
-        if has_oauth_secrets:
-            st.success("✅ OAuth credentials found")
+        if has_refresh_token:
+            st.success("✅ Refresh token configured")
+        elif has_oauth_secrets:
+            st.info("⚠️ OAuth credentials found - authentication required")
         elif has_local:
-            st.success("✅ Local credentials.json found")
+            st.success("✅ Local credentials found")
         else:
-            st.error("❌ Google Drive credentials not found")
+            st.warning("⚠️ No Google Drive credentials")
             st.info("""
-            **To enable Google Drive integration:**
+            **Setup Options:**
             
-            **Option 1: Streamlit Cloud**
-            1. Go to your app settings
-            2. Navigate to "Secrets" section
-            3. Add:
+            **Streamlit Cloud:**
+            Add to secrets:
             ```
-            GOOGLE_CLIENT_ID = "your_client_id"
-            GOOGLE_CLIENT_SECRET = "your_client_secret"
+            GOOGLE_CLIENT_ID = "your_id"
+            GOOGLE_CLIENT_SECRET = "your_secret"
             ```
             
-            **Option 2: Local Development**
-            1. Download `credentials.json` from Google Cloud Console
-            2. Place it in your project root directory
+            **Local:**
+            Place `credentials.json` in project root
             """)
         
-        # Authentication button logic
+        # Authentication logic
         if not st.session_state.drive_authenticated:
-            if has_local or has_oauth_secrets:
-                if st.button("🔗 Connect to Google Drive", type="primary"):
-                    try:
-                        with st.spinner("Authenticating with Google Drive..."):
+            if has_local or has_oauth_secrets or has_refresh_token:
+                if st.button("🔗 Connect Google Drive", type="primary", key="connect_drive"):
+                    st.session_state.auth_attempted = True
+                    st.rerun()
+                
+                # Handle authentication
+                if st.session_state.auth_attempted:
+                    with st.spinner("Authenticating..."):
+                        try:
                             from utils.auth import GoogleDriveAuth
                             drive_auth = GoogleDriveAuth()
                             service = drive_auth.authenticate()
                             
                             if service:
-                                # Store service and mark as authenticated
                                 st.session_state.drive_authenticated = True
                                 st.session_state.drive_service = service
-                                # Force orchestrator recreation
                                 st.session_state.orchestrator = None
-                                st.success("✅ Successfully connected to Google Drive!")
+                                st.session_state.auth_attempted = False
+                                st.success("✅ Connected to Google Drive!")
                                 logger.info("Google Drive authentication successful")
                                 st.rerun()
-                    except Exception as e:
-                        st.error(f"❌ Authentication error: {str(e)}")
-                        logger.error(f"Authentication error: {e}")
+                        except Exception as e:
+                            st.error(f"❌ Authentication error: {str(e)}")
+                            logger.error(f"Authentication error: {e}")
+                            st.session_state.auth_attempted = False
         else:
             st.success("✅ Google Drive Connected")
-            if st.button("🔄 Refresh Connection"):
+            if st.button("🔄 Disconnect", key="disconnect_drive"):
                 st.session_state.drive_authenticated = False
                 st.session_state.drive_service = None
                 st.session_state.orchestrator = None
+                st.session_state.auth_attempted = False
                 st.rerun()
         
         # Model Parameters
         st.markdown("### 🎛️ Model Parameters")
         temperature = st.slider("Temperature", 0.0, 2.0, 0.7, 0.1)
-        max_tokens = st.slider("Max Tokens", 100, 4000, 1000, 100)
+        max_tokens = st.slider("Max Tokens", 100, 4000, 1500, 100)
         
-        # File Search Settings
-        st.markdown("### 📁 Drive Search Settings")
-        search_limit = st.slider("Max Files to Search", 1, 20, 5, 1)
+        # Drive Search Settings
+        st.markdown("### 📁 Search Settings")
+        search_limit = st.slider("Max Files to Search", 1, 10, 5, 1)
         
         # Clear Chat
-        if st.button("🗑️ Clear Chat History", type="secondary"):
+        if st.button("🗑️ Clear Chat", type="secondary"):
             st.session_state.messages = []
+            if st.session_state.orchestrator:
+                st.session_state.orchestrator.conversation_history = []
             st.rerun()
     
-    # Initialize or recreate orchestrator when needed
-    if st.session_state.orchestrator is None and openrouter_key:
+    # Initialize orchestrator if needed
+    if st.session_state.orchestrator is None:
         try:
             from agent.orchestrator import IntelligentOrchestrator
             
-            # CRITICAL: Pass the drive_service from session state
-            drive_service = st.session_state.drive_service if st.session_state.drive_authenticated else None
+            drive_service = (st.session_state.drive_service 
+                           if st.session_state.drive_authenticated else None)
             
             st.session_state.orchestrator = IntelligentOrchestrator(
                 drive_service=drive_service,
@@ -175,38 +201,37 @@ def main():
             )
             
             if drive_service:
-                logger.info("✅ Orchestrator initialized WITH Google Drive service")
-                st.sidebar.success("🔗 Orchestrator connected to Google Drive")
+                logger.info("✅ Orchestrator initialized WITH Google Drive")
             else:
-                logger.info("⚠️ Orchestrator initialized WITHOUT Google Drive service")
-                st.sidebar.warning("⚠️ Orchestrator running without Drive access")
+                logger.info("⚠️ Orchestrator initialized WITHOUT Google Drive")
                 
         except Exception as e:
-            st.error(f"Failed to initialize orchestrator: {e}")
-            logger.error(f"Orchestrator initialization error: {e}")
-            return
+            st.error(f"Failed to initialize: {e}")
+            logger.error(f"Initialization error: {e}")
+            st.stop()
     
-    # Update orchestrator parameters if they changed
+    # Update orchestrator parameters
     elif st.session_state.orchestrator:
         st.session_state.orchestrator.chat_agent.update_parameters(temperature, max_tokens)
     
     # Chat interface
+    st.markdown("### 💬 Chat")
     display_chat_history()
     
     # User input
-    user_input = st.chat_input("Ask me anything... I can search your Google Drive for context!")
+    user_input = st.chat_input("Ask me anything... I can search your Google Drive!")
     
     if user_input and st.session_state.orchestrator:
         # Add user message
         st.session_state.messages.append({"role": "user", "content": user_input})
         
-        # Display user message immediately
+        # Display user message
         with st.chat_message("user", avatar="👤"):
             st.write(user_input)
         
         # Generate response
         with st.chat_message("assistant", avatar="🤖"):
-            with st.spinner("Thinking and searching your Drive..."):
+            with st.spinner("Thinking..."):
                 try:
                     response_data = st.session_state.orchestrator.process_query(
                         user_input,
@@ -216,7 +241,7 @@ def main():
                     # Display response
                     st.write(response_data["response"])
                     
-                    # Add to chat history
+                    # Add to history
                     st.session_state.messages.append({
                         "role": "assistant",
                         "content": response_data["response"],
@@ -225,16 +250,16 @@ def main():
                     
                     # Show context info
                     if response_data.get("context_used"):
-                        st.success(f"📁 Used context from {len(response_data['sources'])} files")
+                        st.success(f"📁 Used {len(response_data['sources'])} file(s)")
                     elif st.session_state.drive_authenticated:
-                        st.info("💭 No relevant files found - answered using general knowledge")
+                        st.info("💭 No relevant files found")
                     else:
-                        st.warning("📁 Google Drive not connected - answered using general knowledge only")
-                    
+                        st.info("💡 Google Drive not connected")
+                        
                 except Exception as e:
                     error_msg = f"Sorry, I encountered an error: {str(e)}"
                     st.error(error_msg)
-                    logger.error(f"Query processing error: {e}")
+                    logger.error(f"Query error: {e}")
                     st.session_state.messages.append({
                         "role": "assistant",
                         "content": error_msg
