@@ -1,151 +1,201 @@
 import streamlit as st
-import json
-import requests
-import io
-from google.oauth2 import service_account
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseDownload
-import pandas as pd
-from PyPDF2 import PdfReader
+import os
+from dotenv import load_dotenv
+import logging
 
-# ----------------------------
-# Configuration
-# ----------------------------
-SCOPES = ['https://www.googleapis.com/auth/drive.readonly']
-MODEL = "openai/gpt-4o"  # or "openai/gpt-3.5-turbo"
+# Load environment variables
+load_dotenv()
 
-# ----------------------------
-# Helper: Google Drive Auth
-# ----------------------------
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
-def get_drive_service():
-    """Authenticate using service account from Streamlit secrets."""
-    try:
-        # Load JSON from secret
-        service_account_info = json.loads(st.secrets["GOOGLE_SERVICE_ACCOUNT_JSON"])
-        creds = service_account.Credentials.from_service_account_info(
-            service_account_info, scopes=SCOPES
-        )
-        return build('drive', 'v3', credentials=creds)
-    except KeyError:
-        st.error("❌ Missing 'GOOGLE_SERVICE_ACCOUNT_JSON' in Streamlit Secrets.")
-        st.stop()
-    except Exception as e:
-        st.error(f"❌ Google Drive auth failed: {str(e)}")
-        st.stop()
+st.set_page_config(
+    page_title="Intelligent AI Agent",
+    page_icon="ðŸ¤–",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
-# ----------------------------
-# File Reading Helpers
-# ----------------------------
+def init_session_state():
+    """Initialize session state variables"""
+    if 'messages' not in st.session_state:
+        st.session_state.messages = []
+    if 'drive_authenticated' not in st.session_state:
+        st.session_state.drive_authenticated = False
+    if 'orchestrator' not in st.session_state:
+        st.session_state.orchestrator = None
+    if 'drive_auth' not in st.session_state:
+        st.session_state.drive_auth = None
+    if 'drive_service' not in st.session_state:
+        st.session_state.drive_service = None
 
-def search_files(service, query):
-    """Search Drive files by name (basic keyword)."""
-    try:
-        results = service.files().list(
-            q=f"name contains '{query}' and trashed=false",
-            fields="files(id, name, mimeType)",
-            pageSize=10
-        ).execute()
-        return results.get('files', [])
-    except Exception as e:
-        st.warning(f"⚠️ Search failed: {e}")
-        return []
+def display_chat_history():
+    """Display chat history"""
+    st.markdown("### ðŸ’¬ Conversation History")
+    
+    for message in st.session_state.messages:
+        with st.chat_message(message["role"], avatar="ðŸ¤–" if message["role"] == "assistant" else "ðŸ‘¤"):
+            st.write(message["content"])
+            # Show context sources if available
+            if message.get("sources"):
+                with st.expander("ðŸ“ Sources Used"):
+                    for source in message["sources"]:
+                        st.write(f"â€¢ **{source['name']}** (ID: {source['id']})")
 
-def read_file_content(service, file_id, mime_type, name):
-    """Extract text from file based on type."""
-    try:
-        request = service.files().get_media(fileId=file_id)
-        fh = io.BytesIO()
-        downloader = MediaIoBaseDownload(fh, request)
-        done = False
-        while not done:
-            _, done = downloader.next_chunk()
-        fh.seek(0)
-
-        if mime_type == 'text/plain':
-            return fh.read().decode('utf-8')
-        elif mime_type == 'application/vnd.google-apps.document':
-            exported = service.files().export_media(fileId=file_id, mimeType='text/plain')
-            export_fh = io.BytesIO()
-            export_downloader = MediaIoBaseDownload(export_fh, exported)
-            done = False
-            while not done:
-                _, done = export_downloader.next_chunk()
-            export_fh.seek(0)
-            return export_fh.read().decode('utf-8')
-        elif mime_type == 'application/pdf':
-            reader = PdfReader(fh)
-            return "\n".join(page.extract_text() or "" for page in reader.pages)
-        elif mime_type in ['text/csv', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet']:
-            df = pd.read_csv(fh) if mime_type == 'text/csv' else pd.read_excel(fh)
-            return df.to_string(index=False)
+def main():
+    # Initialize session state
+    init_session_state()
+    
+    # Header
+    st.markdown("<h1 style='text-align: center; color: #1f77b4;'>ðŸ¤– Intelligent AI Agent</h1>", unsafe_allow_html=True)
+    st.markdown("<p style='text-align: center;'>ChatGPT-3.5 Turbo with Google Drive Context Integration</p>", unsafe_allow_html=True)
+    
+    # Sidebar for configuration
+    with st.sidebar:
+        st.markdown("## âš™ï¸ Configuration")
+        
+        # API Key Status
+        openrouter_key = os.getenv("OPENROUTER_API_KEY")
+        if openrouter_key:
+            st.success("âœ… OpenRouter API Key Found")
         else:
-            return f"[Unsupported: {mime_type}]"
-    except Exception as e:
-        return f"[Error reading {name}: {str(e)}]"
+            st.error("âŒ OpenRouter API Key Missing")
+            st.info("Please set OPENROUTER_API_KEY in your .env file")
+            return
+        
+        # Google Drive Authentication
+        st.markdown("### ðŸ” Google Drive Authentication")
+        
+        if not st.session_state.drive_authenticated:
+            if st.button("ðŸ”— Connect to Google Drive", type="primary"):
+                try:
+                    with st.spinner("Authenticating with Google Drive..."):
+                        from utils.auth import GoogleDriveAuth
+                        drive_auth = GoogleDriveAuth()
+                        service = drive_auth.authenticate()
+                        
+                        if service:
+                            # Store all authentication data in session state
+                            st.session_state.drive_authenticated = True
+                            st.session_state.drive_auth = drive_auth
+                            st.session_state.drive_service = service
+                            
+                            # Reset orchestrator so it gets recreated with Drive service
+                            st.session_state.orchestrator = None
+                            
+                            st.success("âœ… Successfully connected to Google Drive!")
+                            logger.info("Google Drive authentication successful - service stored in session")
+                            st.rerun()
+                        else:
+                            st.error("âŒ Authentication failed")
+                except Exception as e:
+                    st.error(f"âŒ Authentication error: {str(e)}")
+                    logger.error(f"Authentication error: {e}")
+        else:
+            st.success("âœ… Google Drive Connected")
+            if st.button("ðŸ”„ Refresh Connection"):
+                st.session_state.drive_authenticated = False
+                st.session_state.drive_auth = None
+                st.session_state.drive_service = None
+                st.session_state.orchestrator = None
+                st.rerun()
+        
+        # Model Parameters
+        st.markdown("### ðŸŽ›ï¸ Model Parameters")
+        temperature = st.slider("Temperature", 0.0, 2.0, 0.7, 0.1)
+        max_tokens = st.slider("Max Tokens", 100, 4000, 1000, 100)
+        
+        # File Search Settings
+        st.markdown("### ðŸ“ Drive Search Settings")
+        search_limit = st.slider("Max Files to Search", 1, 20, 5, 1)
+        
+        # Clear Chat
+        if st.button("ðŸ—‘ï¸ Clear Chat History", type="secondary"):
+            st.session_state.messages = []
+            st.rerun()
 
-# ----------------------------
-# LLM via OpenRouter
-# ----------------------------
+    # Initialize orchestrator (FIXED: Always check for Drive service)
+    if st.session_state.orchestrator is None and openrouter_key:
+        try:
+            from agent.orchestrator import IntelligentOrchestrator
+            
+            # Get Drive service from session state
+            drive_service = st.session_state.drive_service if st.session_state.drive_authenticated else None
+            
+            st.session_state.orchestrator = IntelligentOrchestrator(
+                drive_service=drive_service,
+                temperature=temperature,
+                max_tokens=max_tokens
+            )
+            
+            if drive_service:
+                logger.info("Orchestrator initialized WITH Google Drive service")
+                st.sidebar.info("ðŸ”— Orchestrator connected to Google Drive")
+            else:
+                logger.info("Orchestrator initialized WITHOUT Google Drive service")
+                st.sidebar.warning("âš ï¸ Orchestrator running without Drive access")
+                
+        except Exception as e:
+            st.error(f"Failed to initialize orchestrator: {e}")
+            logger.error(f"Orchestrator initialization error: {e}")
+            return
+    
+    # Update orchestrator parameters if they changed
+    elif st.session_state.orchestrator:
+        st.session_state.orchestrator.chat_agent.update_parameters(temperature, max_tokens)
+    
+    # Chat interface
+    display_chat_history()
+    
+    # User input
+    user_input = st.chat_input("Ask me anything... I can search your Google Drive for context!")
+    
+    if user_input and st.session_state.orchestrator:
+        # Add user message
+        st.session_state.messages.append({"role": "user", "content": user_input})
+        
+        # Display user message immediately
+        with st.chat_message("user", avatar="ðŸ‘¤"):
+            st.write(user_input)
+        
+        # Generate response
+        with st.chat_message("assistant", avatar="ðŸ¤–"):
+            with st.spinner("Thinking and searching your Drive..."):
+                try:
+                    response_data = st.session_state.orchestrator.process_query(
+                        user_input, 
+                        search_limit=search_limit
+                    )
+                    
+                    # Display response
+                    st.write(response_data["response"])
+                    
+                    # Add to chat history
+                    st.session_state.messages.append({
+                        "role": "assistant", 
+                        "content": response_data["response"],
+                        "sources": response_data.get("sources", [])
+                    })
+                    
+                    # Show context info
+                    if response_data.get("context_used"):
+                        st.success(f"ðŸ“ Used context from {len(response_data['sources'])} files")
+                    elif st.session_state.drive_authenticated:
+                        st.info("ðŸ’­ No relevant files found - answered using general knowledge")
+                    else:
+                        st.warning("ðŸ“ Google Drive not connected - answered using general knowledge only")
+                    
+                except Exception as e:
+                    error_msg = f"Sorry, I encountered an error: {str(e)}"
+                    st.error(error_msg)
+                    logger.error(f"Query processing error: {e}")
+                    st.session_state.messages.append({
+                        "role": "assistant", 
+                        "content": error_msg
+                    })
+        
+        st.rerun()
 
-def ask_llm(prompt):
-    try:
-        resp = requests.post(
-            "https://openrouter.ai/api/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {st.secrets['OPENROUTER_API_KEY']}",
-                "Content-Type": "application/json"
-            },
-            json={
-                "model": MODEL,
-                "messages": [{"role": "user", "content": prompt}],
-                "temperature": 0.3
-            }
-        )
-        resp.raise_for_status()
-        return resp.json()['choices'][0]['message']['content']
-    except Exception as e:
-        return f"LLM Error: {str(e)}"
-
-# ----------------------------
-# Streamlit UI
-# ----------------------------
-
-st.set_page_config(page_title="Intelligent Agent", page_icon="🧠")
-st.title("🧠 Intelligent Agent with Google Drive")
-
-query = st.text_input("Ask a question (agent will search your Google Drive):")
-
-if query:
-    with st.spinner("🔍 Authenticating & searching Drive..."):
-        drive = get_drive_service()
-        keywords = " ".join(query.split()[:3])
-        files = search_files(drive, keywords)
-
-    if files:
-        st.success(f"📚 Found {len(files)} file(s)")
-        context = ""
-        for f in files[:3]:
-            with st.spinner(f"📥 Reading {f['name']}..."):
-                text = read_file_content(drive, f['id'], f['mimeType'], f['name'])
-                context += f"\n\n--- {f['name']} ---\n{text[:2000]}"
-
-        prompt = f"""
-Use ONLY the following context to answer the question.
-If the answer isn't in the context, say: "I don't have enough information."
-
-Context:
-{context}
-
-Question: {query}
-Answer:
-        """.strip()
-
-        with st.spinner("💬 Thinking..."):
-            answer = ask_llm(prompt)
-
-        st.subheader("🤖 Answer")
-        st.write(answer)
-    else:
-        st.warning("No files found. Did you share a folder with the service account?")
-        st.code("streamlit-drive-access@intelligent-agent-473521.iam.gserviceaccount.com")
+if __name__ == "__main__":
+    main()
