@@ -7,12 +7,13 @@ import logging
 load_dotenv()
 
 # Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.INFO,
+                   format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 st.set_page_config(
     page_title="Intelligent AI Agent",
-    page_icon="ðŸ¤–",
+    page_icon="🤖",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -30,71 +31,119 @@ def init_session_state():
     if 'drive_service' not in st.session_state:
         st.session_state.drive_service = None
 
+def check_credentials():
+    """Check if Google credentials are available"""
+    has_local = os.path.exists("credentials.json")
+    has_secrets = False
+    
+    try:
+        if hasattr(st, "secrets"):
+            has_secrets = ("GOOGLE_CLIENT_ID" in st.secrets and 
+                          "GOOGLE_CLIENT_SECRET" in st.secrets)
+    except Exception as e:
+        logger.warning(f"Failed to check secrets: {e}")
+        pass
+    
+    return has_local, has_secrets
+
 def display_chat_history():
     """Display chat history"""
-    st.markdown("### ðŸ’¬ Conversation History")
-    
+    st.markdown("### 💬 Conversation History")
     for message in st.session_state.messages:
-        with st.chat_message(message["role"], avatar="ðŸ¤–" if message["role"] == "assistant" else "ðŸ‘¤"):
+        with st.chat_message(message["role"], 
+                           avatar="🤖" if message["role"] == "assistant" else "👤"):
             st.write(message["content"])
             # Show context sources if available
             if message.get("sources"):
-                with st.expander("ðŸ“ Sources Used"):
+                with st.expander("📁 Sources Used"):
                     for source in message["sources"]:
-                        st.write(f"â€¢ **{source['name']}** (ID: {source['id']})")
+                        st.write(f"• **{source['name']}** (ID: {source['id']})")
 
 def main():
     # Initialize session state
     init_session_state()
     
     # Header
-    st.markdown("<h1 style='text-align: center; color: #1f77b4;'>ðŸ¤– Intelligent AI Agent</h1>", unsafe_allow_html=True)
-    st.markdown("<p style='text-align: center;'>ChatGPT-3.5 Turbo with Google Drive Context Integration</p>", unsafe_allow_html=True)
+    st.markdown("""
+    # 🤖 Intelligent AI Agent
+    ### ChatGPT-3.5 Turbo with Google Drive Context Integration
+    """, unsafe_allow_html=True)
     
     # Sidebar for configuration
     with st.sidebar:
-        st.markdown("## âš™ï¸ Configuration")
+        st.markdown("## ⚙️ Configuration")
         
         # API Key Status
         openrouter_key = os.getenv("OPENROUTER_API_KEY")
+        if not openrouter_key:
+            try:
+                openrouter_key = st.secrets.get("OPENROUTER_API_KEY")
+            except:
+                pass
+        
         if openrouter_key:
-            st.success("âœ… OpenRouter API Key Found")
+            st.success("✅ OpenRouter API Key Found")
         else:
-            st.error("âŒ OpenRouter API Key Missing")
-            st.info("Please set OPENROUTER_API_KEY in your .env file")
+            st.error("❌ OpenRouter API Key Missing")
+            st.info("Please set OPENROUTER_API_KEY in your .env file or Streamlit secrets")
             return
         
         # Google Drive Authentication
-        st.markdown("### ðŸ” Google Drive Authentication")
+        st.markdown("### 🔐 Google Drive Authentication")
         
-        if not st.session_state.drive_authenticated:
-            if st.button("ðŸ”— Connect to Google Drive", type="primary"):
-                try:
-                    with st.spinner("Authenticating with Google Drive..."):
-                        from utils.auth import GoogleDriveAuth
-                        drive_auth = GoogleDriveAuth()
-                        service = drive_auth.authenticate()
-                        
-                        if service:
-                            # Store all authentication data in session state
-                            st.session_state.drive_authenticated = True
-                            st.session_state.drive_auth = drive_auth
-                            st.session_state.drive_service = service
-                            
-                            # Reset orchestrator so it gets recreated with Drive service
-                            st.session_state.orchestrator = None
-                            
-                            st.success("âœ… Successfully connected to Google Drive!")
-                            logger.info("Google Drive authentication successful - service stored in session")
-                            st.rerun()
-                        else:
-                            st.error("âŒ Authentication failed")
-                except Exception as e:
-                    st.error(f"âŒ Authentication error: {str(e)}")
-                    logger.error(f"Authentication error: {e}")
+        # Check credential availability
+        has_local, has_secrets = check_credentials()
+        
+        # Show credential status
+        if has_secrets:
+            st.success("✅ Google credentials found in Streamlit secrets")
+        elif has_local:
+            st.success("✅ Local credentials.json found")
         else:
-            st.success("âœ… Google Drive Connected")
-            if st.button("ðŸ”„ Refresh Connection"):
+            st.error("❌ Google Drive credentials not found")
+            st.info("""
+            **To enable Google Drive integration:**
+            
+            **Option 1: Streamlit Secrets (Recommended for deployment)**
+            1. Go to your app settings in Streamlit Cloud
+            2. Navigate to "Secrets" section
+            3. Add your Google OAuth credentials:
+            ```
+            GOOGLE_CLIENT_ID = "your_client_id"
+            GOOGLE_CLIENT_SECRET = "your_client_secret"
+            ```
+            
+            **Option 2: Local Development**
+            1. Download `credentials.json` from Google Cloud Console
+            2. Place it in your project root directory
+            """)
+        
+        # Authentication button logic
+        if not st.session_state.drive_authenticated:
+            if has_local or has_secrets:
+                if st.button("🔗 Connect to Google Drive", type="primary"):
+                    try:
+                        with st.spinner("Authenticating with Google Drive..."):
+                            from utils.auth import GoogleDriveAuth
+                            drive_auth = GoogleDriveAuth()
+                            service = drive_auth.authenticate()
+                            
+                            if service:
+                                # Store all authentication data in session state
+                                st.session_state.drive_authenticated = True
+                                st.session_state.drive_auth = drive_auth
+                                st.session_state.drive_service = service
+                                # Reset orchestrator so it gets recreated with Drive service
+                                st.session_state.orchestrator = None
+                                st.success("✅ Successfully connected to Google Drive!")
+                                logger.info("Google Drive authentication successful - service stored in session")
+                                st.rerun()
+                    except Exception as e:
+                        st.error(f"❌ Authentication error: {str(e)}")
+                        logger.error(f"Authentication error: {e}")
+        else:
+            st.success("✅ Google Drive Connected")
+            if st.button("🔄 Refresh Connection"):
                 st.session_state.drive_authenticated = False
                 st.session_state.drive_auth = None
                 st.session_state.drive_service = None
@@ -102,24 +151,23 @@ def main():
                 st.rerun()
         
         # Model Parameters
-        st.markdown("### ðŸŽ›ï¸ Model Parameters")
+        st.markdown("### 🎛️ Model Parameters")
         temperature = st.slider("Temperature", 0.0, 2.0, 0.7, 0.1)
         max_tokens = st.slider("Max Tokens", 100, 4000, 1000, 100)
         
         # File Search Settings
-        st.markdown("### ðŸ“ Drive Search Settings")
+        st.markdown("### 📁 Drive Search Settings")
         search_limit = st.slider("Max Files to Search", 1, 20, 5, 1)
         
         # Clear Chat
-        if st.button("ðŸ—‘ï¸ Clear Chat History", type="secondary"):
+        if st.button("🗑️ Clear Chat History", type="secondary"):
             st.session_state.messages = []
             st.rerun()
-
-    # Initialize orchestrator (FIXED: Always check for Drive service)
+    
+    # Initialize orchestrator
     if st.session_state.orchestrator is None and openrouter_key:
         try:
             from agent.orchestrator import IntelligentOrchestrator
-            
             # Get Drive service from session state
             drive_service = st.session_state.drive_service if st.session_state.drive_authenticated else None
             
@@ -131,11 +179,10 @@ def main():
             
             if drive_service:
                 logger.info("Orchestrator initialized WITH Google Drive service")
-                st.sidebar.info("ðŸ”— Orchestrator connected to Google Drive")
+                st.sidebar.info("🔗 Orchestrator connected to Google Drive")
             else:
-                logger.info("Orchestrator initialized WITHOUT Google Drive service")
-                st.sidebar.warning("âš ï¸ Orchestrator running without Drive access")
-                
+                logger.info("Orchestrator initialized WITHOUT Google Drive service") 
+                st.sidebar.warning("⚠️ Orchestrator running without Drive access")
         except Exception as e:
             st.error(f"Failed to initialize orchestrator: {e}")
             logger.error(f"Orchestrator initialization error: {e}")
@@ -156,11 +203,11 @@ def main():
         st.session_state.messages.append({"role": "user", "content": user_input})
         
         # Display user message immediately
-        with st.chat_message("user", avatar="ðŸ‘¤"):
+        with st.chat_message("user", avatar="👤"):
             st.write(user_input)
         
         # Generate response
-        with st.chat_message("assistant", avatar="ðŸ¤–"):
+        with st.chat_message("assistant", avatar="🤖"):
             with st.spinner("Thinking and searching your Drive..."):
                 try:
                     response_data = st.session_state.orchestrator.process_query(
@@ -173,19 +220,19 @@ def main():
                     
                     # Add to chat history
                     st.session_state.messages.append({
-                        "role": "assistant", 
+                        "role": "assistant",
                         "content": response_data["response"],
                         "sources": response_data.get("sources", [])
                     })
                     
                     # Show context info
                     if response_data.get("context_used"):
-                        st.success(f"ðŸ“ Used context from {len(response_data['sources'])} files")
+                        st.success(f"📁 Used context from {len(response_data['sources'])} files")
                     elif st.session_state.drive_authenticated:
-                        st.info("ðŸ’­ No relevant files found - answered using general knowledge")
+                        st.info("💭 No relevant files found - answered using general knowledge")
                     else:
-                        st.warning("ðŸ“ Google Drive not connected - answered using general knowledge only")
-                    
+                        st.warning("📁 Google Drive not connected - answered using general knowledge only")
+                        
                 except Exception as e:
                     error_msg = f"Sorry, I encountered an error: {str(e)}"
                     st.error(error_msg)
@@ -199,3 +246,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+ 
