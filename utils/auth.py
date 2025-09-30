@@ -9,10 +9,14 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 import logging
 
+# Set environment variable to relax OAuth token scope validation
+os.environ['OAUTHLIB_RELAX_TOKEN_SCOPE'] = '1'
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 class GoogleDriveAuth:
+    # Use ONLY readonly scopes - do not mix with write scopes
     SCOPES = [
         'https://www.googleapis.com/auth/drive.readonly',
         'https://www.googleapis.com/auth/drive.metadata.readonly'
@@ -55,7 +59,7 @@ class GoogleDriveAuth:
                 "scopes": self.SCOPES
             }
             
-            self.credentials = Credentials.from_authorized_user_info(token_info)
+            self.credentials = Credentials.from_authorized_user_info(token_info, scopes=self.SCOPES)
             
             # Refresh if expired
             if not self.credentials.valid:
@@ -75,29 +79,50 @@ class GoogleDriveAuth:
         try:
             logger.info("🔐 Using local credentials file")
             
-            # Check for existing token
+            # Check for existing token with scope validation
             if os.path.exists(self.token_file):
-                self.credentials = Credentials.from_authorized_user_file(self.token_file, self.SCOPES)
+                try:
+                    self.credentials = Credentials.from_authorized_user_file(self.token_file, self.SCOPES)
+                    logger.info("📄 Loaded existing token")
+                except Exception as e:
+                    logger.warning(f"⚠️ Token file invalid or scope mismatch: {e}")
+                    # Delete invalid token
+                    os.remove(self.token_file)
+                    logger.info("🗑️ Deleted invalid token file")
+                    self.credentials = None
             
             # Refresh or get new credentials
             if not self.credentials or not self.credentials.valid:
                 if self.credentials and self.credentials.expired and self.credentials.refresh_token:
-                    self.credentials.refresh(Request())
-                else:
+                    try:
+                        self.credentials.refresh(Request())
+                        logger.info("🔄 Token refreshed")
+                    except Exception as e:
+                        logger.warning(f"⚠️ Token refresh failed: {e}")
+                        # Delete invalid token and re-authenticate
+                        if os.path.exists(self.token_file):
+                            os.remove(self.token_file)
+                        self.credentials = None
+                
+                # If still no valid credentials, run OAuth flow
+                if not self.credentials or not self.credentials.valid:
                     flow = InstalledAppFlow.from_client_secrets_file(
                         self.credentials_file, self.SCOPES
                     )
                     self.credentials = flow.run_local_server(port=0)
+                    logger.info("✅ New token obtained")
                 
                 # Save credentials for next run
                 with open(self.token_file, 'w') as token:
                     token.write(self.credentials.to_json())
+                logger.info("💾 Token saved")
             
             logger.info("✅ Local authentication successful")
             return self._build_service()
             
         except Exception as e:
             logger.error(f"Local authentication failed: {e}")
+            st.error(f"❌ Local authentication error: {str(e)}")
             return None
 
     def _authenticate_interactive(self) -> Optional[object]:
@@ -136,10 +161,9 @@ class GoogleDriveAuth:
                 flow = InstalledAppFlow.from_client_secrets_file(temp_creds_path, self.SCOPES)
                 flow.redirect_uri = "urn:ietf:wg:oauth:2.0:oob"
                 
-                # Generate authorization URL
+                # Generate authorization URL - do NOT include granted scopes to avoid scope mismatch
                 auth_url, _ = flow.authorization_url(
                     access_type='offline',
-                    include_granted_scopes='true',
                     prompt='consent'
                 )
                 
@@ -155,17 +179,24 @@ class GoogleDriveAuth:
                 
                 if auth_code:
                     with st.spinner("Authenticating..."):
-                        flow.fetch_token(code=auth_code.strip())
-                        self.credentials = flow.credentials
-                        
-                        st.success("✅ **Authentication Successful!**")
-                        
-                        if self.credentials.refresh_token:
-                            st.info("🔑 **Save this refresh token to your Streamlit secrets:**")
-                            st.code(f'GOOGLE_REFRESH_TOKEN = "{self.credentials.refresh_token}"')
-                            st.warning("⚠️ Copy the refresh token above and add it to your secrets to avoid re-authenticating!")
-                        
-                        return self._build_service()
+                        try:
+                            # Fetch token without scope validation issues
+                            flow.fetch_token(code=auth_code.strip())
+                            self.credentials = flow.credentials
+                            
+                            st.success("✅ **Authentication Successful!**")
+                            
+                            if self.credentials.refresh_token:
+                                st.info("🔑 **Save this refresh token to your Streamlit secrets:**")
+                                st.code(f'GOOGLE_REFRESH_TOKEN = "{self.credentials.refresh_token}"')
+                                st.warning("⚠️ Copy the refresh token above and add it to your secrets to avoid re-authenticating!")
+                            
+                            return self._build_service()
+                        except Exception as e:
+                            logger.error(f"Token fetch failed: {e}")
+                            st.error(f"❌ Authentication failed: {str(e)}")
+                            st.info("💡 Try generating a new authorization code")
+                            return None
                 else:
                     st.warning("⏳ Waiting for authorization code...")
                     return None
