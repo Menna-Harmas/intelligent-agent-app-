@@ -77,6 +77,19 @@ class GoogleDriveAuth:
             logger.error(f"❌ Service account authentication failed: {e}")
             return None
     
+    def _get_redirect_uri(self) -> str:
+        """Get proper redirect URI based on environment"""
+        # Try to get current URL from Streamlit
+        try:
+            # Get current page URL for Streamlit Cloud
+            if hasattr(st, 'query_params'):
+                # We're in Streamlit Cloud
+                return "urn:ietf:wg:oauth:2.0:oob"  # Use OOB for installed apps
+            else:
+                return "http://localhost:8080"
+        except:
+            return "urn:ietf:wg:oauth:2.0:oob"  # Default to OOB flow
+    
     def _create_temp_oauth_credentials(self) -> Optional[str]:
         """Create temporary OAuth credentials file from Streamlit secrets"""
         info = self._env_info()
@@ -85,6 +98,9 @@ class GoogleDriveAuth:
             return None
         
         try:
+            # Get proper redirect URI
+            redirect_uri = self._get_redirect_uri()
+            
             # Create credentials JSON structure for installed app
             creds = {
                 "installed": {
@@ -93,7 +109,7 @@ class GoogleDriveAuth:
                     "auth_uri": "https://accounts.google.com/o/oauth2/auth",
                     "token_uri": "https://oauth2.googleapis.com/token",
                     "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
-                    "redirect_uris": ["http://localhost"]
+                    "redirect_uris": [redirect_uri]
                 }
             }
             
@@ -106,7 +122,7 @@ class GoogleDriveAuth:
             tf.close()
             
             self._temp_creds_path = tf.name
-            logger.info(f"✅ Created temporary OAuth credentials file from secrets")
+            logger.info(f"✅ Created temporary OAuth credentials file from secrets with redirect_uri: {redirect_uri}")
             return tf.name
             
         except Exception as e:
@@ -181,30 +197,34 @@ class GoogleDriveAuth:
                     secret_path, self.SCOPES
                 )
                 
+                # **CRITICAL FIX**: Set redirect URI properly
+                redirect_uri = self._get_redirect_uri()
+                flow.redirect_uri = redirect_uri
+                
                 # Check if we're in cloud environment
                 is_cloud_deployment = not info["local"]
                 
                 if is_cloud_deployment:
-                    # Manual OAuth flow for cloud deployment
+                    # Manual OAuth flow for cloud deployment with proper redirect URI
                     st.info("🔐 **Google Drive Authentication Required**")
                     st.markdown("Please complete the OAuth process to access **your personal Google Drive**:")
                     
-                    # Generate authorization URL
-                    auth_url, _ = flow.authorization_url(
+                    # Generate authorization URL with redirect URI
+                    auth_url, state = flow.authorization_url(
                         prompt='consent',
                         access_type='offline',
                         include_granted_scopes='true'
                     )
                     
                     st.markdown(f"**Step 1:** [🔗 Click to authorize with Google]({auth_url})")
-                    st.markdown("**Step 2:** Copy the authorization code from the redirect URL")
-                    st.markdown("*(Look for `code=` parameter in the URL)*")
+                    st.markdown("**Step 2:** Copy the authorization code from the page")
+                    st.markdown("*(Google will show you the code after authorization)*")
                     
                     # Input for authorization code
                     auth_code = st.text_input(
                         "**Step 3:** Paste authorization code here:",
                         type="password",
-                        help="Copy the 'code' parameter from the URL after authorization",
+                        help="Copy the authorization code from Google",
                         placeholder="4/0AeaYSHA..."
                     )
                     
