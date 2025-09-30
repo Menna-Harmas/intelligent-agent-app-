@@ -134,9 +134,7 @@ class GoogleDriveUtils:
             return []
     
     def get_file_content(self, file_id: str, mime_type: str, file_name: str = "") -> Optional[str]:
-        """
-        Extract text content from a Google Drive file.
-        """
+        """Extract text content from a Google Drive file."""
         try:
             logger.info(f"Extracting content from file '{file_name}' (ID: {file_id}, type: {mime_type})")
             
@@ -353,7 +351,6 @@ class GoogleDriveUtils:
     ) -> Tuple[str, List[Dict[str, str]]]:
         """
         Search for and extract relevant context from Google Drive files.
-        FIXED: Better filename extraction and ranking.
         """
         try:
             logger.info(f"Getting relevant context for query: '{user_query}'")
@@ -375,7 +372,7 @@ class GoogleDriveUtils:
                 logger.warning(f"No files found for query: '{user_query}'")
                 return "", []
             
-            # FIXED: Rank files by relevance to query
+            # Rank files by relevance to query
             def calculate_relevance(file_info):
                 """Calculate relevance score based on filename similarity"""
                 filename = file_info['name'].lower()

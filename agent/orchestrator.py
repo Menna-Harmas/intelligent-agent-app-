@@ -3,6 +3,7 @@ from typing import Dict, List, Optional, Any
 from agent.chat_agent import ChatGPTAgent
 from utils.drive_utils import GoogleDriveUtils
 
+# Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
