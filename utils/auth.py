@@ -29,7 +29,7 @@ class GoogleDriveAuth:
         self.credentials: Optional[Credentials] = None
         self.service = None
         self._temp_creds_path: Optional[str] = None
-        logger.info("🔧 GoogleDriveAuth initialized - Universal authentication support")
+        logger.info("🔧 GoogleDriveAuth initialized - Desktop OAuth optimized")
     
     def _env_info(self) -> Dict[str, bool]:
         """Check available credential sources"""
@@ -77,39 +77,23 @@ class GoogleDriveAuth:
             logger.error(f"❌ Service account authentication failed: {e}")
             return None
     
-    def _get_redirect_uri(self) -> str:
-        """Get proper redirect URI based on environment"""
-        # Try to get current URL from Streamlit
-        try:
-            # Get current page URL for Streamlit Cloud
-            if hasattr(st, 'query_params'):
-                # We're in Streamlit Cloud
-                return "urn:ietf:wg:oauth:2.0:oob"  # Use OOB for installed apps
-            else:
-                return "http://localhost:8080"
-        except:
-            return "urn:ietf:wg:oauth:2.0:oob"  # Default to OOB flow
-    
     def _create_temp_oauth_credentials(self) -> Optional[str]:
-        """Create temporary OAuth credentials file from Streamlit secrets"""
+        """Create temporary Desktop OAuth credentials file from Streamlit secrets"""
         info = self._env_info()
         if not info["oauth_secrets"]:
             logger.error("No OAuth secrets found")
             return None
         
         try:
-            # Get proper redirect URI
-            redirect_uri = self._get_redirect_uri()
-            
-            # Create credentials JSON structure for installed app
+            # Desktop application configuration - no redirect URI needed!
             creds = {
-                "installed": {
+                "installed": {  # Desktop app type
                     "client_id": st.secrets["GOOGLE_CLIENT_ID"],
                     "client_secret": st.secrets["GOOGLE_CLIENT_SECRET"],
                     "auth_uri": "https://accounts.google.com/o/oauth2/auth",
                     "token_uri": "https://oauth2.googleapis.com/token",
                     "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
-                    "redirect_uris": [redirect_uri]
+                    "redirect_uris": ["urn:ietf:wg:oauth:2.0:oob"]  # Out-of-band for desktop
                 }
             }
             
@@ -122,7 +106,7 @@ class GoogleDriveAuth:
             tf.close()
             
             self._temp_creds_path = tf.name
-            logger.info(f"✅ Created temporary OAuth credentials file from secrets with redirect_uri: {redirect_uri}")
+            logger.info("✅ Created temporary Desktop OAuth credentials file")
             return tf.name
             
         except Exception as e:
@@ -161,7 +145,7 @@ class GoogleDriveAuth:
         return False
     
     def _authenticate_with_oauth(self) -> Optional[object]:
-        """Authenticate using OAuth flow"""
+        """Authenticate using Desktop OAuth flow - Streamlit Cloud optimized"""
         info = self._env_info()
         
         # Step 1: Try to load existing credentials
@@ -187,29 +171,25 @@ class GoogleDriveAuth:
                 secret_path = self._create_temp_oauth_credentials()
                 if not secret_path:
                     raise Exception("❌ Failed to create temporary OAuth credentials file from secrets")
-                logger.info("☁️ Using Streamlit OAuth secrets for credentials")
+                logger.info("☁️ Using Desktop OAuth from Streamlit secrets")
             else:
                 raise Exception("❌ No OAuth credentials available")
             
-            # Step 4: Create OAuth flow
+            # Step 4: Create Desktop OAuth flow
             try:
                 flow = InstalledAppFlow.from_client_secrets_file(
                     secret_path, self.SCOPES
                 )
                 
-                # **CRITICAL FIX**: Set redirect URI properly
-                redirect_uri = self._get_redirect_uri()
-                flow.redirect_uri = redirect_uri
-                
-                # Check if we're in cloud environment
+                # Check if we're in cloud environment (no local credentials.json)
                 is_cloud_deployment = not info["local"]
                 
                 if is_cloud_deployment:
-                    # Manual OAuth flow for cloud deployment with proper redirect URI
+                    # **STREAMLIT CLOUD - Manual Desktop OAuth Flow**
                     st.info("🔐 **Google Drive Authentication Required**")
-                    st.markdown("Please complete the OAuth process to access **your personal Google Drive**:")
+                    st.markdown("Complete the **Desktop OAuth** process to access your **personal Google Drive**:")
                     
-                    # Generate authorization URL with redirect URI
+                    # Generate authorization URL for desktop app
                     auth_url, state = flow.authorization_url(
                         prompt='consent',
                         access_type='offline',
@@ -217,68 +197,77 @@ class GoogleDriveAuth:
                     )
                     
                     st.markdown(f"**Step 1:** [🔗 Click to authorize with Google]({auth_url})")
-                    st.markdown("**Step 2:** Copy the authorization code from the page")
-                    st.markdown("*(Google will show you the code after authorization)*")
+                    st.markdown("**Step 2:** Complete authorization in Google")
+                    st.markdown("**Step 3:** Copy the authorization code from Google")
+                    st.info("💡 **After clicking 'Allow'**, Google will show you a **code**. Copy that code!")
                     
                     # Input for authorization code
                     auth_code = st.text_input(
-                        "**Step 3:** Paste authorization code here:",
+                        "**Step 4:** Paste the authorization code here:",
                         type="password",
-                        help="Copy the authorization code from Google",
-                        placeholder="4/0AeaYSHA..."
+                        help="The code Google shows you after authorization",
+                        placeholder="4/0AX4XfWi..."
                     )
                     
                     if auth_code:
-                        try:
-                            # Exchange code for tokens
-                            flow.fetch_token(code=auth_code.strip())
-                            self.credentials = flow.credentials
-                            
-                            st.success("✅ **OAuth Authentication successful!**")
-                            
-                            # Show refresh token for permanent setup
-                            if self.credentials.refresh_token:
-                                st.info("🔑 **Save this refresh token to avoid re-authentication:**")
-                                st.code(f"GOOGLE_REFRESH_TOKEN = \"{self.credentials.refresh_token}\"")
-                                st.markdown("*Add this to your Streamlit Cloud app secrets*")
-                            
-                            st.balloons()
-                            return self._build_service()
-                            
-                        except Exception as e:
-                            st.error(f"❌ **OAuth Authentication failed:** {str(e)}")
-                            st.info("💡 Please try again with a fresh authorization code")
-                            return None
+                        with st.spinner("🔄 Processing authorization..."):
+                            try:
+                                # Exchange code for tokens using desktop flow
+                                flow.fetch_token(code=auth_code.strip())
+                                self.credentials = flow.credentials
+                                
+                                st.success("✅ **Desktop OAuth Authentication Successful!**")
+                                
+                                # Show refresh token for permanent setup
+                                if self.credentials.refresh_token:
+                                    st.info("🔑 **Save this refresh token to avoid future re-authentication:**")
+                                    st.code(f"GOOGLE_REFRESH_TOKEN = \"{self.credentials.refresh_token}\"")
+                                    st.markdown("*Add this to your Streamlit Cloud app secrets*")
+                                
+                                st.balloons()
+                                return self._build_service()
+                                
+                            except Exception as e:
+                                st.error(f"❌ **Desktop OAuth failed:** {str(e)}")
+                                st.info("💡 Please try again with a fresh authorization code")
+                                logger.error(f"Desktop OAuth exchange failed: {e}")
+                                return None
                     else:
                         st.warning("⏳ Waiting for authorization code...")
                         return None
                         
                 else:
-                    # Local development - use built-in server
+                    # **LOCAL DEVELOPMENT - Automatic Desktop OAuth**
                     try:
+                        st.info("🔄 Starting local Desktop OAuth flow...")
+                        
                         self.credentials = flow.run_local_server(
                             port=8080,
                             open_browser=True,
                             authorization_prompt_message="Please visit: {url}",
-                            success_message="✅ Authentication complete! You can close this window."
+                            success_message="✅ Desktop authentication complete! You can close this window."
                         )
                         
                         # Save token locally for future use
                         with open(self.token_file, "w") as f:
                             f.write(self.credentials.to_json())
-                        logger.info("💾 Saved OAuth credentials to local token file")
+                        
+                        st.success("✅ Local Desktop OAuth successful!")
+                        logger.info("💾 Saved Desktop OAuth credentials to local token file")
                         
                         return self._build_service()
                         
                     except Exception as e:
-                        logger.error(f"❌ Local OAuth authentication failed: {e}")
-                        raise Exception(f"Local OAuth authentication failed: {str(e)}")
+                        st.error(f"❌ Local Desktop OAuth failed: {str(e)}")
+                        logger.error(f"Local Desktop OAuth failed: {e}")
+                        raise Exception(f"Local Desktop OAuth failed: {str(e)}")
                     
             except Exception as e:
-                logger.error(f"❌ OAuth flow creation failed: {e}")
-                raise Exception(f"OAuth flow failed: {str(e)}")
+                logger.error(f"❌ Desktop OAuth flow creation failed: {e}")
+                raise Exception(f"Desktop OAuth flow failed: {str(e)}")
         else:
             # Credentials are valid, build service
+            logger.info("✅ Using existing valid Desktop OAuth credentials")
             return self._build_service()
     
     def _build_service(self) -> Optional[object]:
@@ -300,14 +289,15 @@ class GoogleDriveAuth:
             raise Exception(f"Service initialization failed: {str(e)}")
     
     def authenticate(self) -> Optional[object]:
-        """Authenticate with Google Drive API - Works for both local and cloud"""
+        """Authenticate with Google Drive API - Desktop OAuth optimized"""
         info = self._env_info()
         logger.info(f"🔍 Environment check: Local={info['local']}, OAuth={info['oauth_secrets']}, ServiceAccount={info['service_account']}")
         
         try:
-            # Priority 1: Try OAuth authentication (for personal Drive access)
+            # Priority 1: Desktop OAuth authentication (for personal Drive access)
             if info["local"] or info["oauth_secrets"]:
-                logger.info("🔑 Attempting OAuth authentication (Personal Drive Access)")
+                logger.info("🔑 Attempting Desktop OAuth authentication (Personal Drive Access)")
+                st.info("🖥️ **Using Desktop OAuth** for accessing your **personal Google Drive**")
                 return self._authenticate_with_oauth()
             
             # Priority 2: Fallback to service account (limited access)
@@ -318,16 +308,20 @@ class GoogleDriveAuth:
             
             else:
                 # No credentials available
-                raise Exception(
-                    "❌ No Google credentials available!\n\n"
+                error_msg = (
+                    "❌ **No Google credentials available!**\n\n"
                     "**For Personal Drive Access (Recommended):**\n"
-                    "1. Go to your app settings → Secrets\n"
-                    "2. Add: GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET\n\n"
+                    "1. Create **Desktop OAuth Client** in Google Cloud Console\n"
+                    "2. Add to your Streamlit secrets:\n"
+                    "   - `GOOGLE_CLIENT_ID`\n"
+                    "   - `GOOGLE_CLIENT_SECRET`\n\n"
                     "**For Local Development:**\n"
-                    "1. Download OAuth credentials.json from Google Cloud Console\n"
+                    "1. Download Desktop OAuth `credentials.json`\n"
                     "2. Place it in your project root directory\n\n"
-                    "**Note:** Service accounts can only access files shared with them."
+                    "💡 **Desktop OAuth** works best with Streamlit Cloud!"
                 )
+                st.error(error_msg)
+                raise Exception(error_msg)
         
         finally:
             # Cleanup temporary files
